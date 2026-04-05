@@ -2,7 +2,7 @@ import os
 import requests
 import logging
 from flask import Flask, request
-import google.generativeai as genai
+from groq import Groq
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -10,11 +10,10 @@ logging.basicConfig(level=logging.INFO)
 # === المتغيرات ===
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_secret_verify_123")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# تهيئة Gemini (المكتبة القديمة والمستقرة)
-genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")  # ✅ بدون -latest
+# تهيئة Groq Client
+client = Groq(api_key=GROQ_API_KEY)
 
 # === دوال الماسنجر ===
 def send_messenger(recipient_id, text):
@@ -26,17 +25,22 @@ def send_messenger(recipient_id, text):
     except Exception as e:
         logging.error(f"فشل الإرسال: {e}")
 
-# === الذكاء الاصطناعي ===
+# === الذكاء الاصطناعي (Groq + Llama 3) ===
 def get_ai_reply(user_text):
     try:
-        response = model.generate_content(
-            f"""أنت مساعد ذكي يتحدث العربية. رد بإيجاز وود على:
-"{user_text}" """
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # سريع ومجاني ويدعم العربية
+            messages=[
+                {"role": "system", "content": "أنت مساعد ذكي يتحدث العربية بطلاقة. رد بإيجاز وود."},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.7,
+            max_tokens=500
         )
-        return response.text.strip()
+        return completion.choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"خطأ Gemini: {e}")
-        return "عذراً، حدث خطأ مؤقت."
+        logging.error(f"خطأ Groq: {e}")
+        return "عذراً، حدث خطأ مؤقت. حاول لاحقاً."
 
 # === Webhooks ===
 @app.route("/webhook", methods=["GET"])
