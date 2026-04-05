@@ -2,7 +2,7 @@ import os
 import requests
 import logging
 from flask import Flask, request
-from google import genai
+import google.generativeai as genai
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -12,8 +12,9 @@ PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_secret_verify_123")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-# تهيئة Gemini API (المكتبة الجديدة)
-client = genai.Client(api_key=GOOGLE_API_KEY)
+# تهيئة Gemini (المكتبة القديمة والمستقرة)
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
 # === دوال الماسنجر ===
 def send_messenger(recipient_id, text):
@@ -23,22 +24,19 @@ def send_messenger(recipient_id, text):
     try:
         requests.post(url, params=params, json=data)
     except Exception as e:
-        logging.error(f"فشل إرسال الرسالة: {e}")
+        logging.error(f"فشل الإرسال: {e}")
 
 # === الذكاء الاصطناعي ===
 def get_ai_reply(user_text):
     try:
-        # نستخدم gemini-pro لأنه مستقر 100% على الخطة المجانية ويتجنب خطأ 404
-        response = client.models.generate_content(
-            model="gemini-pro",
-            contents=f"""أنت مساعد ذكي ومفيد يتحدث العربية بطلاقة.
-رد بإيجاز وود على رسالة المستخدم التالية:
+        response = model.generate_content(
+            f"""أنت مساعد ذكي يتحدث العربية. رد بإيجاز وود على:
 "{user_text}" """
         )
         return response.text.strip()
     except Exception as e:
         logging.error(f"خطأ Gemini: {e}")
-        return "عذراً، حدث خطأ مؤقت في الخادم. حاول مرة أخرى لاحقاً."
+        return "عذراً، حدث خطأ مؤقت."
 
 # === Webhooks ===
 @app.route("/webhook", methods=["GET"])
@@ -64,11 +62,11 @@ def webhook():
                     if "message" in event and "text" in event["message"]:
                         user_text = event["message"]["text"].strip()
                         
-                        send_messenger(sender_id, "🤔 لحظة أفكر...")
+                        send_messenger(sender_id, "🤔 أفكر...")
                         ai_reply = get_ai_reply(user_text)
                         send_messenger(sender_id, ai_reply)
                 except Exception as e:
-                    logging.error(f"خطأ Webhook: {e}")
+                    logging.error(f"خطأ: {e}")
 
     return "EVENT_RECEIVED", 200
 
