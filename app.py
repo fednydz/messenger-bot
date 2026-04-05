@@ -2,20 +2,21 @@ import os
 import requests
 import logging
 from flask import Flask, request
-from openai import OpenAI
+import google.generativeai as genai
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# === إعدادات المتغيرات ===
+# === المتغيرات ===
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_secret_verify_123")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# تهيئة عميل OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
+# تهيئة Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-# === دالة إرسال رسالة ===
+# === إرسال رسالة للماسنجر ===
 def send_messenger(recipient_id, text):
     url = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
@@ -23,24 +24,23 @@ def send_messenger(recipient_id, text):
     try:
         requests.post(url, params=params, json=data)
     except Exception as e:
-        logging.error(f"Error sending message: {e}")
+        logging.error(f"فشل الإرسال: {e}")
 
-# === دالة الذكاء الاصطناعي ===
+# === الذكاء الاصطناعي (Gemini) ===
 def get_ai_reply(user_text):
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "أنت مساعد ذكي ومفيد يتحدث العربية بطلاقة. رد بإيجاز وود."},
-                {"role": "user", "content": user_text}
-            ]
-        )
-        return response.choices[0].message.content
+        # توجيه النموذج ليرد بالعربية وبأسلوب ودود
+        prompt = f"""أنت مساعد ذكي ومفيد يتحدث العربية بطلاقة.
+رد بإيجاز وود على رسالة المستخدم التالية:
+"{user_text}" """
+        
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        logging.error(f"AI Error: {e}")
-        return "عذراً، حدث خطأ في الاتصال. حاول لاحقاً."
+        logging.error(f"خطأ Gemini: {e}")
+        return "عذراً، حدث خطأ مؤقت في الذكاء الاصطناعي. حاول لاحقاً."
 
-# === Webhooks ===
+# === Webhook ===
 @app.route("/webhook", methods=["GET"])
 def verify():
     mode = request.args.get("hub.mode")
@@ -48,7 +48,7 @@ def verify():
     challenge = request.args.get("hub.challenge")
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return challenge, 200
-    return "Verification Failed", 403
+    return "فشل التحقق", 403
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -61,21 +61,14 @@ def webhook():
             for event in entry.get("messaging", []):
                 try:
                     sender_id = event["sender"]["id"]
-                    
                     if "message" in event and "text" in event["message"]:
                         user_text = event["message"]["text"].strip()
                         
-                        # إرسال رسالة "جاري التفكير"
                         send_messenger(sender_id, "🤔 لحظة أفكر...")
-                        
-                        # الحصول على رد الذكاء الاصطناعي
                         ai_reply = get_ai_reply(user_text)
-                        
-                        # إرسال الرد
                         send_messenger(sender_id, ai_reply)
-                        
                 except Exception as e:
-                    logging.error(f"Webhook Error: {e}")
+                    logging.error(f"خطأ Webhook: {e}")
 
     return "EVENT_RECEIVED", 200
 
