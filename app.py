@@ -25,11 +25,11 @@ def send_messenger(recipient_id, text):
     except Exception as e:
         logging.error(f"فشل الإرسال: {e}")
 
-# === الذكاء الاصطناعي (Groq + Llama 3) ===
+# === الذكاء الاصطناعي ===
 def get_ai_reply(user_text):
     try:
         completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",  # سريع ومجاني ويدعم العربية
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": "أنت مساعد ذكي يتحدث العربية بطلاقة. رد بإيجاز وود."},
                 {"role": "user", "content": user_text}
@@ -66,7 +66,7 @@ def webhook():
                     if "message" in event and "text" in event["message"]:
                         user_text = event["message"]["text"].strip()
                         
-                        send_messenger(sender_id, "🤔 أفكر...")
+                        # ✅ الرد المباشر بدون رسالة وسيطة
                         ai_reply = get_ai_reply(user_text)
                         send_messenger(sender_id, ai_reply)
                 except Exception as e:
