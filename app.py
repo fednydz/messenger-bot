@@ -14,7 +14,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 # تهيئة Gemini (المكتبة القديمة والمستقرة)
 genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash-latest")
+model = genai.GenerativeModel("gemini-1.5-flash")  # ✅ بدون -latest
 
 # === دوال الماسنجر ===
 def send_messenger(recipient_id, text):
