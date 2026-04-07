@@ -38,54 +38,137 @@ SURAH_NAMES = {
     "المسد": 111, "الإخلاص": 112, "الفلق": 113, "الناس": 114
 }
 
+# === قائمة القراء المشهورين ===
+RECITERS = {
+    "العفاسي": "https://server8.mp3quran.net/afs/",
+    "الباسط": "https://server8.mp3quran.net/basit/",
+    "المنشاوي": "https://server8.mp3quran.net/minshawi/",
+    "الغامدي": "https://server8.mp3quran.net/ghamdi/",
+    "المعيقلي": "https://server8.mp3quran.net/maher/",
+    "العجمي": "https://server8.mp3quran.net/ajmy/",
+    "الدوسري": "https://server8.mp3quran.net/dosri/",
+    "الحذيفي": "https://server8.mp3quran.net/hudhaify/",
+    "السديس": "https://server8.mp3quran.net/sudais/",
+    "الشريم": "https://server8.mp3quran.net/shuraim/"
+}
+
+DEFAULT_RECITER = "العفاسي"  # القارئ الافتراضي
+
 # === دوال الإرسال ===
 def send_text(token, recipient_id, text):
     url = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
-    data_payload = {"recipient": {"id": recipient_id}, "message": {"text": text}}
-    requests.post(url, params=params, json=data_payload)
+    data = {"recipient": {"id": recipient_id}, "message": {"text": text}}
+    requests.post(url, params=params, json=data)
 
 def send_media(token, recipient_id, media_type, url):
     url_api = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
-    data_payload = {
+    data = {
         "recipient": {"id": recipient_id},
         "message": {"attachment": {"type": media_type, "payload": {"url": url}}}
     }
-    requests.post(url_api, params=params, json=data_payload)
+    requests.post(url_api, params=params, json=data)
 
-def send_buttons(token, recipient_id, surah_number):
+def send_reciter_buttons(token, recipient_id, surah_number):
+    """أزرار اختيار القارئ"""
+    url_api = "https://graph.facebook.com/v18.0/me/messages"
+    params = {"access_token": token}
+    
+    # نختار 4 قراء عشوائيين للعرض
+    reciter_list = list(RECITERS.keys())[:4]
+    quick_replies = []
+    
+    for reciter in reciter_list:
+        quick_replies.append({
+            "content_type": "text",
+            "title": f"🎙️ {reciter}",
+            "payload": f"RECITER_{surah_number}_{reciter}"
+        })
+    
+    # زر المزيد
+    quick_replies.append({
+        "content_type": "text",
+        "title": "📋 المزيد من القراء",
+        "payload": f"MORE_RECITERS_{surah_number}"
+    })
+    
+    data = {
+        "recipient": {"id": recipient_id},
+        "message": {
+            "text": "🎙️ اختر القارئ الذي تفضله:",
+            "quick_replies": quick_replies
+        }
+    }
+    requests.post(url_api, params=params, json=data)
+
+def send_more_reciters(token, recipient_id, surah_number):
+    """عرض باقي القراء"""
+    url_api = "https://graph.facebook.com/v18.0/me/messages"
+    params = {"access_token": token}
+    
+    reciter_list = list(RECITERS.keys())[4:]
+    quick_replies = []
+    
+    for reciter in reciter_list:
+        quick_replies.append({
+            "content_type": "text",
+            "title": f"🎙️ {reciter}",
+            "payload": f"RECITER_{surah_number}_{reciter}"
+        })
+    
+    # زر العودة
+    quick_replies.append({
+        "content_type": "text",
+        "title": "⬅️ عودة",
+        "payload": f"SURAH_{surah_number}"
+    })
+    
+    data = {
+        "recipient": {"id": recipient_id},
+        "message": {
+            "text": "🎙️ اختر قارئاً آخر:",
+            "quick_replies": quick_replies
+        }
+    }
+    requests.post(url_api, params=params, json=data)
+
+def send_navigation_buttons(token, recipient_id, surah_number):
+    """أزرار التنقل بين السور"""
     url_api = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
     next_s = surah_number + 1 if surah_number < 114 else 1
     prev_s = surah_number - 1 if surah_number > 1 else 114
-    data_payload = {
+    
+    data = {
         "recipient": {"id": recipient_id},
         "message": {
-            "text": "📖 اختر ما تريد:",
+            "text": "📖 تصفح السور:",
             "quick_replies": [
                 {"content_type": "text", "title": "⬅️ السابقة", "payload": f"SURAH_{prev_s}"},
+                {"content_type": "text", "title": "🎙️ تغيير القارئ", "payload": f"RECITERS_{surah_number}"},
                 {"content_type": "text", "title": "التالية ➡️", "payload": f"SURAH_{next_s}"}
             ]
         }
     }
-    requests.post(url_api, params=params, json=data_payload)
+    requests.post(url_api, params=params, json=data)
 
 def send_welcome(token, recipient_id):
-    welcome_text = """📖 *بوت القرآن الكريم* 📖
+    """رسالة الترحيب"""
+    welcome = """📖 *بوت القرآن الكريم* 📖
 
 أرسل:
 • رقم السورة (1-114)
-• أو اسم السورة (مثل: الإخلاص، الفاتحة، يس)
+• أو اسم السورة (مثل: الإخلاص، الفاتحة)
 • أو /start للبدء
 
-وسأرسل لك:
+✨ مميزات البوت:
 ✅ صورة الصفحة من المصحف
-✅ التلاوة الصوتية
-✅ أزرار للتنقل بين السور
+✅ التلاوة الصوتية بعدة قراء
+✅ أزرار للتنقل السريع
 
 بارك الله فيك 🌹"""
-    send_text(token, recipient_id, welcome_text)
+    send_text(token, recipient_id, welcome)
 
 # === جلب بيانات السورة ===
 def get_surah_data(surah_number):
@@ -97,23 +180,26 @@ def get_surah_data(surah_number):
         
         info = res["data"]
         page = info["ayahs"][0]["page"]
-        # روابط موثوقة
-        audio_url = f"https://server8.mp3quran.net/afs/{surah_number:03d}.mp3"
         image_url = f"https://cdn.islamic.network/quran/images/high-res/{page}.jpg"
         
         return {
-            "name": info["name"], 
-            "number": surah_number, 
-            "audio": audio_url, 
-            "image": image_url, 
+            "name": info["name"],
+            "number": surah_number,
+            "image": image_url,
             "page": page
         }
     except Exception as e:
         logging.error(f"خطأ جلب سورة: {e}")
         return None
 
+# === الحصول على رابط التلاوة ===
+def get_recitation_url(surah_number, reciter_name):
+    """توليد رابط التلاوة حسب القارئ"""
+    base_url = RECITERS.get(reciter_name, RECITERS[DEFAULT_RECITER])
+    return f"{base_url}{surah_number:03d}.mp3"
+
 # === معالجة طلب السورة ===
-def handle_surah(token, recipient_id, surah_input):
+def handle_surah(token, recipient_id, surah_input, reciter=DEFAULT_RECITER):
     num = int(surah_input) if surah_input.isdigit() else SURAH_NAMES.get(surah_input)
     
     if not num or not (1 <= num <= 114):
@@ -123,22 +209,22 @@ def handle_surah(token, recipient_id, surah_input):
     send_text(token, recipient_id, "⏳ جاري تحضير السورة...")
     data = get_surah_data(num)
     
-    # ✅ هنا تم التصحيح: الشرط كامل
-    if not data:
+    if not 
         send_text(token, recipient_id, "❌ فشل تحميل البيانات. حاول مرة أخرى.")
         return
 
     # إرسال الصورة
     send_media(token, recipient_id, "image", data["image"])
     
-    # إرسال الصوت
-    send_media(token, recipient_id, "audio", data["audio"])
+    # إرسال الصوت (حسب القارئ المختار)
+    audio_url = get_recitation_url(num, reciter)
+    send_media(token, recipient_id, "audio", audio_url)
     
     # إرسال المعلومات
-    send_text(token, recipient_id, f"📖 سورة {data['name']}\n🔢 رقم {num} | صفحة {data['page']}")
+    send_text(token, recipient_id, f"📖 سورة {data['name']}\n🔢 رقم {num} | صفحة {data['page']}\n🎙️ القارئ: {reciter}")
     
-    # إرسال أزرار التنقل
-    send_buttons(token, recipient_id, num)
+    # إرسال أزرار القراء
+    send_reciter_buttons(token, recipient_id, num)
 
 # === Webhooks ===
 @app.route("/webhook", methods=["GET"])
@@ -171,6 +257,23 @@ def webhook():
                     # رسالة البداية
                     if txt.lower() in ["/start", "start", "ابدأ", "بداية"]:
                         send_welcome(token, sender)
+                    
+                    # اختيار قارئ لسورة معينة
+                    elif txt.startswith("RECITER_"):
+                        parts = txt.replace("RECITER_", "").split("_")
+                        surah_num = parts[0]
+                        reciter = parts[1] if len(parts) > 1 else DEFAULT_RECITER
+                        handle_surah(token, sender, surah_num, reciter)
+                    
+                    # عرض المزيد من القراء
+                    elif txt.startswith("MORE_RECITERS_"):
+                        surah_num = txt.replace("MORE_RECITERS_", "")
+                        send_more_reciters(token, sender, surah_num)
+                    
+                    # عرض أزرار القراء
+                    elif txt.startswith("RECITERS_"):
+                        surah_num = txt.replace("RECITERS_", "")
+                        send_reciter_buttons(token, sender, surah_num)
                     
                     # أزرار التنقل
                     elif txt.startswith("SURAH_"):
