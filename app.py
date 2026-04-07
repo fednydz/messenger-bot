@@ -42,8 +42,8 @@ SURAH_NAMES = {
 def send_text(token, recipient_id, text):
     url = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
-    data = {"recipient": {"id": recipient_id}, "message": {"text": text}}
-    requests.post(url, params=params, json=data)
+    data_payload = {"recipient": {"id": recipient_id}, "message": {"text": text}}
+    requests.post(url, params=params, json=data_payload)
 
 def send_media(token, recipient_id, media_type, url):
     url_api = "https://graph.facebook.com/v18.0/me/messages"
@@ -72,7 +72,6 @@ def send_buttons(token, recipient_id, surah_number):
     requests.post(url_api, params=params, json=data_payload)
 
 def send_welcome(token, recipient_id):
-    """رسالة الترحيب والشرح"""
     welcome_text = """📖 *بوت القرآن الكريم* 📖
 
 أرسل:
@@ -124,8 +123,8 @@ def handle_surah(token, recipient_id, surah_input):
     send_text(token, recipient_id, "⏳ جاري تحضير السورة...")
     data = get_surah_data(num)
     
-    # ✅ هنا تم تصحيح الخطأ بإضافة data
-    if not 
+    # ✅ هنا تم التصحيح: الشرط كامل
+    if not data:
         send_text(token, recipient_id, "❌ فشل تحميل البيانات. حاول مرة أخرى.")
         return
 
