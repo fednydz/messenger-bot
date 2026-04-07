@@ -11,7 +11,7 @@ FB_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 IG_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_secret_verify_123")
 
-# === قائمة السور (رقم: اسم) ===
+# === قائمة السور ===
 SURAH_NAMES = {
     "الفاتحة": 1, "البقرة": 2, "آل عمران": 3, "النساء": 4, "المائدة": 5,
     "الأنعام": 6, "الأعراف": 7, "الأنفال": 8, "التوبة": 9, "يونس": 10,
@@ -38,7 +38,7 @@ SURAH_NAMES = {
     "المسد": 111, "الإخلاص": 112, "الفلق": 113, "الناس": 114
 }
 
-# === قائمة القراء وروابطهم ===
+# === قائمة القراء ===
 RECITERS = {
     "العفاسي": "https://server8.mp3quran.net/afs/",
     "الباسط": "https://server8.mp3quran.net/basit/",
@@ -53,7 +53,7 @@ RECITERS = {
 }
 DEFAULT_RECITER = "العفاسي"
 
-# === دوال الإرسال الأساسية ===
+# === دوال الإرسال ===
 def send_text(token, recipient_id, text):
     url = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
@@ -87,7 +87,7 @@ def send_buttons(token, recipient_id, text, buttons):
     except Exception as e:
         logging.error(f"خطأ إرسال أزرار: {e}")
 
-# === دوال مساعدة للقرآن ===
+# === دوال القرآن ===
 def get_surah_data(surah_number):
     try:
         api = f"https://api.alquran.cloud/v1/surah/{surah_number}"
@@ -111,7 +111,7 @@ def get_recitation_url(surah_number, reciter_name):
     base_url = RECITERS.get(reciter_name, RECITERS[DEFAULT_RECITER])
     return f"{base_url}{surah_number:03d}.mp3"
 
-# === دوال واجهة المستخدم ===
+# === واجهة المستخدم ===
 def send_welcome(token, recipient_id):
     msg = """📖 *بوت القرآن الكريم* 📖
 أرسل:
@@ -159,8 +159,8 @@ def handle_surah(token, recipient_id, surah_input, reciter=DEFAULT_RECITER):
     send_text(token, recipient_id, "⏳ جاري التحضير...")
     data = get_surah_data(num)
 
-    # ✅ التصحيح الكامل هنا (كان السطر ناقصاً سابقاً)
-    if not 
+    # ✅ التصحيح: السطر الكامل والصحيح
+    if not data:
         send_text(token, recipient_id, "❌ فشل تحميل البيانات. تأكد من الاتصال وحاول مرة أخرى.")
         return
 
@@ -200,7 +200,6 @@ def webhook():
                 sender = event["sender"]["id"]
                 text = None
 
-                # دعم الرسائل النصية والأزرار السريعة
                 if "message" in event and "text" in event["message"]:
                     text = event["message"]["text"].strip()
                 elif "postback" in event:
@@ -209,7 +208,6 @@ def webhook():
                 if not text:
                     continue
 
-                # التوجيه حسب النص أو payload
                 if text.lower() in ["/start", "start", "ابدأ"]:
                     send_welcome(token, sender)
                 elif text.startswith("RECITER_"):
