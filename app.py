@@ -9,10 +9,10 @@ logging.basicConfig(level=logging.INFO)
 
 # === المتغيرات ===
 FB_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
+IG_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_secret_verify_123")
 
-# تهيئة Groq
 client = Groq(api_key=GROQ_KEY)
 
 # === قائمة السور ===
@@ -43,154 +43,88 @@ SURAH_NAMES = {
 }
 
 # === دوال الإرسال ===
-def send_text(recipient_id, text):
+def send_text(token, recipient_id, text):
     url = "https://graph.facebook.com/v18.0/me/messages"
-    params = {"access_token": FB_TOKEN}
+    params = {"access_token": token}
     data = {"recipient": {"id": recipient_id}, "message": {"text": text}}
     requests.post(url, params=params, json=data)
 
-def send_image(recipient_id, image_url):
-    url = "https://graph.facebook.com/v18.0/me/messages"
-    params = {"access_token": FB_TOKEN}
+def send_media(token, recipient_id, media_type, url):
+    url_api = "https://graph.facebook.com/v18.0/me/messages"
+    params = {"access_token": token}
     data = {
         "recipient": {"id": recipient_id},
-        "message": {
-            "attachment": {
-                "type": "image",
-                "payload": {"url": image_url}
-            }
-        }
+        "message": {"attachment": {"type": media_type, "payload": {"url": url}}}
     }
-    requests.post(url, params=params, json=data)
+    requests.post(url_api, params=params, json=data)
 
-def send_audio(recipient_id, audio_url):
-    url = "https://graph.facebook.com/v18.0/me/messages"
-    params = {"access_token": FB_TOKEN}
-    data = {
-        "recipient": {"id": recipient_id},
-        "message": {
-            "attachment": {
-                "type": "audio",
-                "payload": {"url": audio_url}
-            }
-        }
-    }
-    requests.post(url, params=params, json=data)
-
-def send_buttons(recipient_id, surah_number):
-    """إرسال أزرار التنقل"""
-    url = "https://graph.facebook.com/v18.0/me/messages"
-    params = {"access_token": FB_TOKEN}
-    
-    next_surah = surah_number + 1 if surah_number < 114 else 1
-    prev_surah = surah_number - 1 if surah_number > 1 else 114
-    
+def send_buttons(token, recipient_id, surah_number):
+    url_api = "https://graph.facebook.com/v18.0/me/messages"
+    params = {"access_token": token}
+    next_s = surah_number + 1 if surah_number < 114 else 1
+    prev_s = surah_number - 1 if surah_number > 1 else 114
     data = {
         "recipient": {"id": recipient_id},
         "message": {
             "text": "📖 اختر ما تريد:",
             "quick_replies": [
-                {
-                    "content_type": "text",
-                    "title": "⬅️ السابقة",
-                    "payload": f"SURAH_{prev_surah}"
-                },
-                {
-                    "content_type": "text",
-                    "title": "التالية ➡️",
-                    "payload": f"SURAH_{next_surah}"
-                }
+                {"content_type": "text", "title": "⬅️ السابقة", "payload": f"SURAH_{prev_s}"},
+                {"content_type": "text", "title": "التالية ➡️", "payload": f"SURAH_{next_s}"}
             ]
         }
     }
-    requests.post(url, params=params, json=data)
+    requests.post(url_api, params=params, json=data)
 
 # === جلب بيانات السورة ===
 def get_surah_data(surah_number):
-    """جلب صورة وصوت السورة من API"""
     try:
-        # جلب معلومات السورة
-        api_url = f"https://api.alquran.cloud/v1/surah/{surah_number}"
-        response = requests.get(api_url)
-        data = response.json()
+        api = f"https://api.alquran.cloud/v1/surah/{surah_number}"
+        res = requests.get(api).json()
+        if res["code"] != 200: return None
         
-        if data["code"] != 200:
-            return None
-        
-        surah_info = data["data"]
-        surah_name = surah_info["name"]
-        
-        # رابط صورة الصفحة (من المصحف الإلكتروني)
-        page_number = surah_info["ayahs"][0]["numberInSurah"]
-        image_url = f"https://everyayah.com/data/Alafasy_128/{surah_number:03d}001.mp3"
-        
-        # رابط التلاوة (مشاري العفاسي)
+        info = res["data"]
+        page = info["ayahs"][0]["page"]
+        # روابط موثوقة ومجانية
         audio_url = f"https://server8.mp3quran.net/afs/{surah_number:03d}.mp3"
+        image_url = f"https://cdn.islamic.network/quran/images/high-res/{page}.jpg"
         
-        # صورة المصحف (يمكن استخدام API آخر للصور)
-        quran_image_url = f"https://quran-api.pages.dev/page/{surah_info['ayahs'][0]['page']}"
-        
-        return {
-            "name": surah_name,
-            "number": surah_number,
-            "audio": audio_url,
-            "image": quran_image_url,
-            "page": surah_info["ayahs"][0]["page"]
-        }
+        return {"name": info["name"], "number": surah_number, "audio": audio_url, "image": image_url, "page": page}
     except Exception as e:
-        logging.error(f"خطأ في جلب السورة: {e}")
+        logging.error(f"خطأ جلب سورة: {e}")
         return None
 
 # === معالجة طلب السورة ===
-def handle_surah_request(recipient_id, surah_input):
-    """معالجة طلب السورة بالاسم أو الرقم"""
-    surah_number = None
-    
-    # التحقق إذا كان رقماً
-    if surah_input.isdigit():
-        surah_number = int(surah_input)
-    else:
-        # البحث بالاسم
-        surah_number = SURAH_NAMES.get(surah_input)
-    
-    if not surah_number or surah_number < 1 or surah_number > 114:
-        send_text(recipient_id, "❌ السورة غير صحيحة. أرسل رقم السورة (1-114) أو اسمها.")
+def handle_surah(token, recipient_id, surah_input):
+    num = int(surah_input) if surah_input.isdigit() else SURAH_NAMES.get(surah_input)
+    if not num or not (1 <= num <= 114):
+        send_text(token, recipient_id, "❌ أدخل رقماً (1-114) أو اسم سورة صحيح.")
         return
-    
-    send_text(recipient_id, f"⏳ جاري تحميل سورة...")
-    
-    surah_data = get_surah_data(surah_number)
-    
-    if not surah_data:
-        send_text(recipient_id, "❌ حدث خطأ في جلب السورة.")
-        return
-    
-    # إرسال الصورة
-    send_image(recipient_id, surah_data["image"])
-    
-    # إرسال الصوت
-    send_audio(recipient_id, surah_data["audio"])
-    
-    # إرسال المعلومات
-    send_text(recipient_id, f"📖 سورة {surah_data['name']} (رقم {surah_number})\nالصفحة: {surah_data['page']}")
-    
-    # إرسال أزرار التنقل
-    send_buttons(recipient_id, surah_number)
 
-# === الذكاء الاصطناعي ===
+    send_text(token, recipient_id, "⏳ جاري تحضير السورة...")
+    data = get_surah_data(num)
+    if not data:
+        send_text(token, recipient_id, "❌ فشل تحميل البيانات.")
+        return
+
+    send_media(token, recipient_id, "image", data["image"])
+    send_media(token, recipient_id, "audio", data["audio"])
+    send_text(token, recipient_id, f"📖 سورة {data['name']} | رقم {num} | صفحة {data['page']}")
+    send_buttons(token, recipient_id, num)
+
+# === الذكاء الاصطناعي (Fallback) ===
 def get_ai_reply(user_text):
     try:
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "أنت مساعد ذكي يتحدث العربية. إذا سأل عن القرآن أو السور، وجهه لإرسال رقم أو اسم السورة."},
+                {"role": "system", "content": "أنت مساعد ذكي يتحدث العربية. رد بإيجاز وود."},
                 {"role": "user", "content": user_text}
             ]
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"خطأ Groq: {e}")
-        return "عذراً، حدث خطأ."
+        logging.error(f"AI Error: {e}")
+        return "عذراً، حدث خطأ مؤقت."
 
 # === Webhooks ===
 @app.route("/webhook", methods=["GET"])
@@ -208,30 +142,29 @@ def webhook():
     if not payload or "object" not in payload:
         return "EVENT_RECEIVED", 200
 
-    if payload["object"] == "page":
-        for entry in payload.get("entry", []):
-            for event in entry.get("messaging", []):
-                try:
-                    sender_id = event["sender"]["id"]
+    token = FB_TOKEN if payload["object"] == "page" else IG_TOKEN
+    if not token: return "EVENT_RECEIVED", 200
+
+    for entry in payload.get("entry", []):
+        for event in entry.get("messaging", []):
+            try:
+                sender = event["sender"]["id"]
+                if "message" in event and "text" in event["message"]:
+                    txt = event["message"]["text"].strip()
                     
-                    if "message" in event and "text" in event["message"]:
-                        user_text = event["message"]["text"].strip()
-                        
-                        # التحقق من طلب السورة
-                        if user_text.startswith("SURAH_"):
-                            surah_num = int(user_text.replace("SURAH_", ""))
-                            handle_surah_request(sender_id, str(surah_num))
-                        elif user_text.isdigit() and 1 <= int(user_text) <= 114:
-                            handle_surah_request(sender_id, user_text)
-                        elif user_text in SURAH_NAMES:
-                            handle_surah_request(sender_id, user_text)
-                        else:
-                            # رد الذكاء الاصطناعي
-                            ai_reply = get_ai_reply(user_text)
-                            send_text(sender_id, ai_reply)
-                            
-                except Exception as e:
-                    logging.error(f"خطأ: {e}")
+                    # 1. أزرار التنقل
+                    if txt.startswith("SURAH_"):
+                        handle_surah(token, sender, txt.replace("SURAH_", ""))
+                    # 2. طلب سورة برقم أو اسم
+                    elif txt.isdigit() and 1 <= int(txt) <= 114:
+                        handle_surah(token, sender, txt)
+                    elif txt in SURAH_NAMES:
+                        handle_surah(token, sender, txt)
+                    # 3. أي شيء آخر ← ذكاء اصطناعي
+                    else:
+                        send_text(token, sender, get_ai_reply(txt))
+            except Exception as e:
+                logging.error(f"خطأ Webhook: {e}")
 
     return "EVENT_RECEIVED", 200
 
