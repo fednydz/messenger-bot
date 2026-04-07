@@ -1,6 +1,7 @@
 import os
 import requests
 import logging
+import time
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -10,9 +11,6 @@ logging.basicConfig(level=logging.INFO)
 FB_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 IG_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_secret_verify_123")
-
-# === تخزين حالة القراءة مؤقتاً (يمسح عند إعادة تشغيل البوت) ===
-user_reading_state = {}
 
 # === قائمة السور ===
 SURAH_NAMES = {
@@ -42,22 +40,46 @@ SURAH_NAMES = {
 }
 
 # === دوال الإرسال الأساسية ===
-def send_msg(token, rid, text, quick_replies=None):
+def send_text(token, rid, text):
     url = "https://graph.facebook.com/v18.0/me/messages"
     data = {"recipient": {"id": rid}, "message": {"text": text}}
-    if quick_replies:
-        data["message"]["quick_replies"] = quick_replies
     requests.post(url, params={"access_token": token}, json=data)
 
 def send_audio(token, rid, url):
     url = "https://graph.facebook.com/v18.0/me/messages"
+    data = {"recipient": {"id": rid}, "message": {"attachment": {"type": "audio", "payload": {"url": url}}}}
+    requests.post(url, params={"access_token": token}, json=data)
+
+def send_text_in_chunks(token, rid, full_text, max_chunk=900):
+    lines = full_text.split('\n')
+    chunk = []
+    current_len = 0
+    for line in lines:
+        line_with_space = len(line) + 1
+        if current_len + line_with_space > max_chunk and chunk:
+            send_text(token, rid, '\n'.join(chunk))
+            time.sleep(1.2)
+            chunk = []
+            current_len = 0
+        chunk.append(line)
+        current_len += line_with_space
+    if chunk:
+        send_text(token, rid, '\n'.join(chunk))
+
+def send_choice_buttons(token, rid, num, name):
+    url = "https://graph.facebook.com/v18.0/me/messages"
     data = {
         "recipient": {"id": rid},
-        "message": {"attachment": {"type": "audio", "payload": {"url": url}}}
+        "message": {
+            "text": f"📖 سورة {name}\nاختر ما تفضل:",
+            "quick_replies": [
+                {"content_type": "text", "title": "🎧 الاستماع", "payload": f"LISTEN_{num}"},
+                {"content_type": "text", "title": "📖 القراءة", "payload": f"READ_{num}"}
+            ]
+        }
     }
     requests.post(url, params={"access_token": token}, json=data)
 
-# === جلب النص وتقسيمه لأجزاء ===
 def get_surah_text(num):
     try:
         res = requests.get(f"https://api.alquran.cloud/v1/surah/{num}").json()
@@ -67,73 +89,45 @@ def get_surah_text(num):
         logging.error(f"خطأ جلب النص: {e}")
         return None
 
-def split_into_parts(text, max_len=850):
-    verses = text.split('\n')
-    parts = []
-    current = []
-    curr_len = 0
-    for v in verses:
-        v_len = len(v) + 1
-        if curr_len + v_len > max_len and current:
-            parts.append('\n'.join(current))
-            current = [v]
-            curr_len = v_len
-        else:
-            current.append(v)
-            curr_len += v_len
-    if current:
-        parts.append('\n'.join(current))
-    return parts
-
-# === بدء القراءة التفاعلية ===
-def start_reading(token, rid, surah_num):
-    text = get_surah_text(surah_num)
-    if not text:
-        send_msg(token, rid, "❌ تعذر جلب النص حالياً.")
+def handle_quran_request(token, rid, input_val):
+    num = int(input_val) if input_val.isdigit() else SURAH_NAMES.get(input_val)
+    if not num or not (1 <= num <= 114):
+        send_text(token, rid, "❌ يرجى كتابة رقم أو اسم سورة صحيح.")
         return
-    
-    parts = split_into_parts(text)
-    # حفظ حالة المستخدم
-    user_reading_state[rid] = {"surah": surah_num, "parts": parts, "idx": 0}
-    
-    # إرسال الجزء الأول مع الزر
-    is_last = len(parts) == 1
-    btn_title = "✅ انتهت السورة" if is_last else "الجزء التالي ➡️"
-    payload = f"DONE_{surah_num}" if is_last else f"NEXT_{surah_num}_1"
-    
-    send_msg(token, rid, parts[0], [{"content_type": "text", "title": btn_title, "payload": payload}])
+    name = list(SURAH_NAMES.keys())[list(SURAH_NAMES.values()).index(num)]
+    send_choice_buttons(token, rid, num, name)
 
-# === متابعة القراءة عند ضغط الزر ===
-def continue_reading(token, rid, surah_num, next_idx):
-    state = user_reading_state.get(rid)
-    
-    # إذا ضاعت الحالة أو تغيرت السورة، نعيد البدء
-    if not state or str(state["surah"]) != str(surah_num):
-        start_reading(token, rid, int(surah_num))
-        return
-
-    parts = state["parts"]
-    if next_idx < len(parts):
-        is_last = next_idx == len(parts) - 1
-        btn_title = "✅ انتهت السورة" if is_last else "الجزء التالي ➡️"
-        payload = f"DONE_{surah_num}" if is_last else f"NEXT_{surah_num}_{next_idx + 1}"
-        
-        send_msg(token, rid, parts[next_idx], [{"content_type": "text", "title": btn_title, "payload": payload}])
-        state["idx"] = next_idx
-    else:
-        send_msg(token, rid, "🌹 تقبل الله طاعتكم وحسن خاتمتكم")
-        if rid in user_reading_state:
-            del user_reading_state[rid]
-
-# === معالجة اختيار الاستماع/القراءة ===
-def handle_choice(token, rid, action, surah_num):
-    surah_num = int(surah_num)
+def handle_quran_action(token, rid, action, num):
+    num = int(num)
     if action == "LISTEN":
-        send_msg(token, rid, "🎧 جاري إرسال التلاوة...")
-        audio_url = f"https://server8.mp3quran.net/afs/{surah_num:03d}.mp3"
-        send_audio(token, rid, audio_url)
+        send_text(token, rid, "🎧 جاري إرسال التلاوة...")
+        send_audio(token, rid, f"https://server8.mp3quran.net/afs/{num:03d}.mp3")
     elif action == "READ":
-        start_reading(token, rid, surah_num)
+        text = get_surah_text(num)
+        if text:
+            send_text(token, rid, "📖 جاري إرسال النص جزءاً بجزء...")
+            send_text_in_chunks(token, rid, text)
+        else:
+            send_text(token, rid, "❌ تعذر جلب النص حالياً.")
+
+# === دوال التفاعل مع المنشورات والتعليقات ===
+def like_post(post_id):
+    """إضافة إعجاب للمنشور"""
+    url = f"https://graph.facebook.com/v18.0/{post_id}/likes"
+    requests.post(url, params={"access_token": FB_TOKEN})
+
+def reply_to_comment(comment_id, text):
+    """الرد على تعليق محدد"""
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
+    requests.post(url, params={"access_token": FB_TOKEN}, json={"message": text})
+
+def send_dm_to_user(user_id, text):
+    """إرسال رسالة خاصة للمستخدم الذي علّق"""
+    url = "https://graph.facebook.com/v18.0/me/messages"
+    requests.post(url, params={"access_token": FB_TOKEN}, json={
+        "recipient": {"id": user_id},
+        "message": {"text": text}
+    })
 
 # === Webhooks ===
 @app.route("/webhook", methods=["GET"])
@@ -151,45 +145,77 @@ def webhook():
     if not payload or "object" not in payload:
         return "EVENT_RECEIVED", 200
 
-    token = FB_TOKEN if payload["object"] == "page" else IG_TOKEN
-    if not token: return "EVENT_RECEIVED", 200
+    # معالجة أحداث فيسبوك
+    if payload["object"] == "page":
+        token = FB_TOKEN
+        for entry in payload.get("entry", []):
+            # 1️⃣ معالجة الرسائل الخاصة (DMs)
+            if "messaging" in entry:
+                for event in entry["messaging"]:
+                    try:
+                        sender = event["sender"]["id"]
+                        if "message" in event and "text" in event["message"]:
+                            txt = event["message"]["text"]
+                            action_payload = event.get("message", {}).get("quick_reply", {}).get("payload", txt)
+                            
+                            if action_payload.startswith("LISTEN_"):
+                                handle_quran_action(token, sender, "LISTEN", action_payload.split("_")[1])
+                            elif action_payload.startswith("READ_"):
+                                handle_quran_action(token, sender, "READ", action_payload.split("_")[1])
+                            elif txt in SURAH_NAMES or (txt.isdigit() and 1 <= int(txt) <= 114):
+                                handle_quran_request(token, sender, txt)
+                            else:
+                                send_text(token, sender, "🌹 أهلاً بك! أرسل اسم أو رقم سورة للبدء.")
+                    except Exception as e:
+                        logging.error(f"DM Error: {e}")
 
-    for entry in payload.get("entry", []):
-        for event in entry.get("messaging", []):
-            try:
-                sender = event["sender"]["id"]
-                if "message" in event and "text" in event["message"]:
-                    txt = event["message"]["text"]
-                    # نأخذ الـ payload من الزر إن وُجد، وإلا نأخذ النص العادي
-                    action_payload = event.get("message", {}).get("quick_reply", {}).get("payload", txt)
-                    
-                    # 1. أزرار القراءة التفاعلية (الجزء التالي)
-                    if action_payload.startswith("NEXT_"):
-                        parts = action_payload.split("_")
-                        continue_reading(token, sender, parts[1], int(parts[2]))
-                    elif action_payload.startswith("DONE_"):
-                        s_num = action_payload.split("_")[1]
-                        send_msg(token, sender, "🌹 تقبل الله طاعتكم")
-                        if sender in user_reading_state: del user_reading_state[sender]
-                        
-                    # 2. أزرار الاختيار الأولية (استماع / قراءة)
-                    elif action_payload.startswith("LISTEN_") or action_payload.startswith("READ_"):
-                        act, s_num = action_payload.split("_")
-                        handle_choice(token, sender, act, s_num)
-                        
-                    # 3. طلب سورة جديد بالاسم أو الرقم
-                    elif txt in SURAH_NAMES or (txt.isdigit() and 1 <= int(txt) <= 114):
-                        num = int(txt) if txt.isdigit() else SURAH_NAMES[txt]
-                        name = list(SURAH_NAMES.keys())[list(SURAH_NAMES.values()).index(num)]
-                        send_msg(token, sender, f"📖 سورة {name}\nاختر ما تفضل:", [
-                            {"content_type": "text", "title": "🎧 الاستماع", "payload": f"LISTEN_{num}"},
-                            {"content_type": "text", "title": "📖 القراءة", "payload": f"READ_{num}"}
-                        ])
-                    else:
-                        send_msg(token, sender, "🌹 أهلاً بك! أرسل اسم أو رقم سورة للبدء.")
-                        
-            except Exception as e:
-                logging.error(f"خطأ Webhook: {e}")
+            # 2️⃣ معالجة التعليقات على المنشورات (Feed)
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change.get("field") == "feed":
+                        val = change.get("value", {})
+                        # التأكد أن الحدث هو إضافة تعليق جديد
+                        if val.get("item") == "comment" and val.get("verb") == "add":
+                            post_id = val.get("post_id")
+                            comment_id = val.get("comment_id")
+                            sender_id = val.get("sender_id")
+                            
+                            try:
+                                # ✅ أ. إعجاب بالمنشور
+                                like_post(post_id)
+                                logging.info(f"✅ تم الإعجاب بالمنشور: {post_id}")
+                                
+                                # ✅ ب. الرد على التعليق
+                                reply_to_comment(comment_id, "شكراً لتفاعلك الجميل! 🌹 تم إرسال رسالة خاصة لك.")
+                                logging.info(f"✅ تم الرد على التعليق: {comment_id}")
+                                
+                                # ✅ ج. إرسال رسالة خاصة
+                                send_dm_to_user(sender_id, "أهلاً بك! 👋 شكراً لتعليقك على المنشور. كيف يمكنني مساعدتك اليوم؟")
+                                logging.info(f"✅ تم إرسال رسالة خاصة للمستخدم: {sender_id}")
+                            except Exception as e:
+                                logging.error(f"Comment Action Error: {e}")
+
+    # معالجة أحداث إنستغرام (الرسائل الخاصة فقط)
+    elif payload["object"] == "instagram":
+        token = IG_TOKEN
+        for entry in payload.get("entry", []):
+            if "messaging" in entry:
+                for event in entry["messaging"]:
+                    try:
+                        sender = event["sender"]["id"]
+                        if "message" in event and "text" in event["message"]:
+                            txt = event["message"]["text"]
+                            action_payload = event.get("message", {}).get("quick_reply", {}).get("payload", txt)
+                            if action_payload.startswith("LISTEN_"):
+                                handle_quran_action(token, sender, "LISTEN", action_payload.split("_")[1])
+                            elif action_payload.startswith("READ_"):
+                                handle_quran_action(token, sender, "READ", action_payload.split("_")[1])
+                            elif txt in SURAH_NAMES or (txt.isdigit() and 1 <= int(txt) <= 114):
+                                handle_quran_request(token, sender, txt)
+                            else:
+                                send_text(token, sender, "🌹 أهلاً بك! أرسل اسم أو رقم سورة للبدء.")
+                    except Exception as e:
+                        logging.error(f"IG DM Error: {e}")
 
     return "EVENT_RECEIVED", 200
 
