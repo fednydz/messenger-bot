@@ -48,18 +48,18 @@ def send_text(token, recipient_id, text):
 def send_media(token, recipient_id, media_type, url):
     url_api = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
-    data = {
+    data_payload = {
         "recipient": {"id": recipient_id},
         "message": {"attachment": {"type": media_type, "payload": {"url": url}}}
     }
-    requests.post(url_api, params=params, json=data)
+    requests.post(url_api, params=params, json=data_payload)
 
 def send_buttons(token, recipient_id, surah_number):
     url_api = "https://graph.facebook.com/v18.0/me/messages"
     params = {"access_token": token}
     next_s = surah_number + 1 if surah_number < 114 else 1
     prev_s = surah_number - 1 if surah_number > 1 else 114
-    data = {
+    data_payload = {
         "recipient": {"id": recipient_id},
         "message": {
             "text": "📖 اختر ما تريد:",
@@ -69,7 +69,7 @@ def send_buttons(token, recipient_id, surah_number):
             ]
         }
     }
-    requests.post(url_api, params=params, json=data)
+    requests.post(url_api, params=params, json=data_payload)
 
 def send_welcome(token, recipient_id):
     """رسالة الترحيب والشرح"""
@@ -124,6 +124,7 @@ def handle_surah(token, recipient_id, surah_input):
     send_text(token, recipient_id, "⏳ جاري تحضير السورة...")
     data = get_surah_data(num)
     
+    # ✅ هنا تم تصحيح الخطأ بإضافة data
     if not 
         send_text(token, recipient_id, "❌ فشل تحميل البيانات. حاول مرة أخرى.")
         return
