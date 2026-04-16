@@ -1,6 +1,7 @@
 import os
 import requests
 import logging
+import time
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -20,31 +21,43 @@ def send_message(recipient_id, text):
     except Exception as e:
         logging.error(f"فشل الإرسال: {e}")
 
-# === دالة جلب الإعراب من API المكتبة الشاملة ===
+# === دالة جلب الإعراب (محسنة مع إعادة المحاولة) ===
 def get_i3rab(text: str) -> str:
     url = "https://tahlil.almaktaba.org/api/v1/tahlil"
     params = {"text": text.strip(), "type": "i3rab"}
     
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        if "words" not in data or not data["words"]:
-            return "❌ لم أتمكن من تحليل الجملة. تأكد أنها عربية واضحة."
-        
-        result = "📖 إعراب الجملة:\n" + "━" * 20 + "\n"
-        for word in data["words"]:
-            w_text = word.get("text", "—")
-            w_i3rab = word.get("i3rab") or word.get("case") or "غير محدد"
-            result += f"🔹 {w_text}: {w_i3rab}\n"
-        
-        return result + "━" * 20 + "\n✅ تم التحليل بنجاح"
-        
-    except requests.exceptions.Timeout:
-        return "⏳ مهلة الاتصال انتهت. حاول مرة أخرى."
-    except Exception as e:
-        return f"❌ خطأ في الخدمة: {str(e)[:50]}"
+    # نحاول مرتين للتغلب على بطء الشبكة المؤقت
+    for attempt in range(2):
+        try:
+            response = requests.get(url, params=params, timeout=15) # زيادة الوقت لـ 15 ثانية
+            response.raise_for_status()
+            data = response.json()
+            
+            if "words" not in data or not data["words"]:
+                return "❌ لم أتمكن من تحليل الجملة. تأكد أنها عربية واضحة."
+            
+            result = "📖 إعراب الجملة:\n" + "━" * 20 + "\n"
+            for word in data["words"]:
+                w_text = word.get("text", "—")
+                w_i3rab = word.get("i3rab") or word.get("case") or "غير محدد"
+                result += f"🔹 {w_text}: {w_i3rab}\n"
+            
+            return result + "━" * 20 + "\n✅ تم التحليل بنجاح"
+            
+        except requests.exceptions.Timeout:
+            if attempt == 0:
+                time.sleep(1) # انتظر ثانية ثم جرب مجدداً
+                continue
+            return "⏳ الموقع بطيء جداً حالياً. حاول مرة أخرى بعد قليل."
+            
+        except requests.exceptions.ConnectionError:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            return "❌ لا يمكن الاتصال بخدمة الإعراب حالياً. قد يكون الموقع تحت الصيانة."
+            
+        except Exception as e:
+            return f"❌ خطأ غير متوقع: {str(e)[:50]}"
 
 # === Webhook Verification ===
 @app.route("/webhook", methods=["GET"])
@@ -70,7 +83,6 @@ def webhook():
                 try:
                     sender_id = event["sender"]["id"]
                     
-                    # تجاهل الرسائل غير النصية أو الأوامر
                     if "message" in event and "text" in event["message"]:
                         user_text = event["message"]["text"].strip()
                         
