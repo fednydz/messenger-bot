@@ -7,7 +7,7 @@ from groq import Groq
 from datetime import datetime
 
 # إعداد التطبيق
-app = FastAPI(title="Facebook AI Bot")
+app = FastAPI(title="Facebook AI Bot - Messenger & Comments")
 
 # إعداد التسجيل
 logging.basicConfig(
@@ -45,7 +45,7 @@ def generate_ai_reply(comment_text: str, post_context: str = "") -> str:
     try:
         prompt = f"""
         سياق المنشور: {post_context}
-        التعليق: {comment_text}
+        التعليق/الرسالة: {comment_text}
         
         الرد المناسب:
         """
@@ -65,7 +65,7 @@ def generate_ai_reply(comment_text: str, post_context: str = "") -> str:
     
     except Exception as e:
         logger.error(f"❌ خطأ في Groq API: {e}")
-        return "شكراً لتعليقك! 🙏 سيقوم فريقنا بالرد عليك قريباً."
+        return "شكراً لتواصلك! 🙏 سيقوم فريقنا بالرد عليك قريباً."
 
 def reply_to_facebook_comment(comment_id: str, reply_text: str) -> dict:
     """إرسال رد على تعليق في فيسبوك"""
@@ -90,13 +90,69 @@ def reply_to_facebook_comment(comment_id: str, reply_text: str) -> dict:
         logger.error(f"❌ خطأ في إرسال الرد: {e}")
         return {"error": str(e)}
 
+def send_messenger_reply(recipient_id: str, reply_text: str) -> dict:
+    """إرسال رد عبر Messenger API"""
+    try:
+        url = f"https://graph.facebook.com/v21.0/me/messages"
+        params = {"access_token": settings.FACEBOOK_PAGE_TOKEN}
+        json_data = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": reply_text}
+        }
+        
+        response = requests.post(url, params=params, json=json_data, timeout=10)
+        result = response.json()
+        
+        if response.status_code == 200:
+            logger.info(f"✅ تم إرسال رسالة خاصة إلى {recipient_id}")
+        else:
+            logger.error(f"❌ فشل إرسال الرسالة: {result}")
+        
+        return result
+    
+    except Exception as e:
+        logger.error(f"❌ خطأ في إرسال الرسالة: {e}")
+        return {"error": str(e)}
+
+def handle_messaging_event(messaging_event: dict):
+    """معالجة رسالة خاصة من Messenger"""
+    try:
+        sender_id = messaging_event.get("sender", {}).get("id")
+        message = messaging_event.get("message", {})
+        message_text = message.get("text", "")
+        mid = message.get("mid", "")
+        
+        # تجاهل إذا لم يكن هناك نص
+        if not message_text:
+            logger.info("⏭️ تجاهل رسالة بدون نص")
+            return
+        
+        # تجاهل إذا كانت الرسالة من البوت نفسه (message_echoes)
+        if messaging_event.get("sender", {}).get("id") == messaging_event.get("recipient", {}).get("id"):
+            logger.info("⏭️ تجاهل رسالة من البوت نفسه")
+            return
+        
+        logger.info(f"💬 رسالة خاصة من {sender_id}: {message_text[:50]}...")
+        
+        # توليد الرد الذكي
+        ai_reply = generate_ai_reply(message_text, post_context="Private Message via Messenger")
+        logger.info(f"🤖 AI Reply: {ai_reply}")
+        
+        # إرسال الرد عبر Messenger API
+        if sender_id and ai_reply:
+            send_messenger_reply(sender_id, ai_reply)
+    
+    except Exception as e:
+        logger.error(f"❌ خطأ في معالجة رسالة Messenger: {e}")
+
 @app.get("/")
 async def root():
     """صفحة رئيسية للتحقق من عمل التطبيق"""
     return {
-        "status": "🤖 Facebook AI Bot is running!",
+        "status": "🤖 Facebook AI Bot (Messenger + Comments) is running!",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0"
+        "version": "2.0.0",
+        "features": ["Comments Auto-Reply", "Messenger Auto-Reply"]
     }
 
 @app.get("/webhook")
@@ -120,7 +176,7 @@ async def verify_webhook(
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     """
-    معالجة أحداث فيسبوك (تعليقات جديدة، رسائل، إلخ)
+    معالجة أحداث فيسبوك (تعليقات على المنشورات + رسائل Messenger)
     """
     try:
         data = await request.json()
@@ -128,11 +184,15 @@ async def handle_webhook(request: Request):
         
         # التحقق من أن الحدث من صفحة
         if data.get("object") != "page":
+            logger.info("⏭️ تجاهل: ليس page object")
             return JSONResponse(content={"status": "ignored - not a page object"})
         
         # معالجة كل entry في البيانات
         for entry in data.get("entry", []):
-            # معالجة التغييرات في الـ feed (تعليقات جديدة)
+            page_id = entry.get("id")
+            logger.debug(f"📄 معالجة أحداث الصفحة: {page_id}")
+            
+            # ✅ 1. معالجة التعليقات على المنشورات (Feed)
             for change in entry.get("changes", []):
                 if change.get("field") == "feed":
                     value = change.get("value", {})
@@ -146,15 +206,15 @@ async def handle_webhook(request: Request):
                     
                     # تجاهل إذا كان التعليق من البوت نفسه
                     if "AI Bot" in sender_name or "Bot" in sender_name:
-                        logger.info("⏭️ Skipping comment from bot itself")
+                        logger.info("⏭️ تجاوز التعليق من البوت نفسه")
                         continue
                     
                     # تجاهل التعليقات الفارغة
                     if not message or not comment_id:
-                        logger.warning("⚠️ Empty message or comment_id")
+                        logger.warning("⚠️ تعليق فارغ أو بدون ID")
                         continue
                     
-                    logger.info(f"💬 New comment from {sender_name}: {message[:50]}...")
+                    logger.info(f"💬 تعليق جديد من {sender_name}: {message[:50]}...")
                     
                     # توليد الرد الذكي
                     ai_reply = generate_ai_reply(
@@ -167,12 +227,16 @@ async def handle_webhook(request: Request):
                     # إرسال الرد إلى فيسبوك
                     if comment_id and ai_reply:
                         reply_result = reply_to_facebook_comment(comment_id, ai_reply)
-                        logger.info(f"📤 Reply result: {reply_result}")
+                        logger.info(f"📤 نتيجة الرد: {reply_result}")
+            
+            # ✅ 2. معالجة الرسائل الخاصة (Messenger)
+            for messaging_event in entry.get("messaging", []):
+                handle_messaging_event(messaging_event)
         
         return JSONResponse(content={"status": "success", "message": "Webhook processed"})
     
     except Exception as e:
-        logger.error(f"❌ Error processing webhook: {e}", exc_info=True)
+        logger.error(f"❌ خطأ في معالجة webhook: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
@@ -181,7 +245,8 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "facebook-ai-bot"
+        "service": "facebook-ai-bot",
+        "app_id": "1227734325927164"
     }
 
 @app.get("/test-ai")
@@ -209,6 +274,6 @@ if __name__ == "__main__":
         "app:app",
         host="0.0.0.0",
         port=settings.PORT,
-        reload=(settings.PORT == 8000),  # فقط في التطوير المحلي
+        reload=(settings.PORT == 8000),
         log_level="info"
     )
