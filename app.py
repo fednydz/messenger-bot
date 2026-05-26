@@ -18,6 +18,10 @@ APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 CONAN_LINK = "https://dz4link.com/mounirdjouida"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 
+# رابط صورة الغلاف (يجب أن يكون رابط Raw مباشر من GitHub)
+# مثال: https://raw.githubusercontent.com/YourUsername/messenger-bot/main/mo.webp
+CONAN_IMAGE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/messenger-bot/main/mo.webp" 
+
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 def extract_episode_info(text):
@@ -73,7 +77,6 @@ def get_ai_response(user_message):
         return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة لاحقاً."
 
 def send_messenger_action(recipient_id, action):
-    """إرسال إجراء للمراسل: typing_on / typing_off"""
     params = {
         "recipient": {"id": recipient_id},
         "sender_action": action,
@@ -81,25 +84,34 @@ def send_messenger_action(recipient_id, action):
     }
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
+def send_image_attachment(recipient_id, image_url):
+    """إرسال صورة كمرفق"""
+    params = {
+        "recipient": {"id": recipient_id},
+        "message": {
+            "attachment": {
+                "type": "image",
+                "payload": {
+                    "url": image_url,
+                    "is_reusable": True
+                }
+            }
+        },
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
+
 def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_char=0.05):
-    """
-    إرسال الرسالة على أجزاء مع محاكاة الكتابة البشرية
-    - typing_per_char: وقت الكتابة التقريبي لكل حرف (لإبقاء مؤشر الكتابة)
-    - chunk_delay: فاصل زمني بين إرسال كل جزء
-    """
-    # حساب وقت "الكتابة" الكلي بناءً على طول الرسالة
-    total_typing_time = min(len(full_text) * typing_per_char, 8)  # حد أقصى 8 ثواني
+    """إرسال النص على أجزاء"""
+    total_typing_time = min(len(full_text) * typing_per_char, 6)
     
-    # إبقاء مؤشر الكتابة نشطاً
     send_messenger_action(recipient_id, "typing_on")
     time.sleep(total_typing_time)
     
-    # تقسيم الرسالة إلى أجزاء منطقية (أسطر أو جمل)
     chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
     if not chunks:
         chunks = [full_text]
     
-    # إرسال كل جزء على حدة
     for i, chunk in enumerate(chunks):
         params = {
             "recipient": {"id": recipient_id},
@@ -107,11 +119,9 @@ def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_
             "access_token": PAGE_ACCESS_TOKEN
         }
         requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
-        # فاصل صغير بين الأجزاء (إلا في آخر جزء)
         if i < len(chunks) - 1:
             time.sleep(chunk_delay)
     
-    # إيقاف مؤشر الكتابة بعد الانتهاء
     send_messenger_action(recipient_id, "typing_off")
 
 @app.route('/webhook', methods=['GET'])
@@ -136,14 +146,24 @@ def handle_webhook():
                     
                     if user_wants_conan_content(user_text):
                         info = extract_episode_info(user_text)
+                        
+                        # 1. إظهار الكتابة قبل الصورة
+                        send_messenger_action(sender_id, "typing_on")
+                        time.sleep(2) # محاكاة البحث عن الصورة
+                        
+                        # 2. إرسال الصورة
+                        send_image_attachment(sender_id, CONAN_IMAGE_URL)
+                        time.sleep(1.5) # فاصل بعد إرسال الصورة
+                        
+                        # 3. تحضير وإرسال النص
                         prefix = generate_custom_prefix(info)
                         response_text = f"{prefix}\n{CONAN_LINK}\n\n{POLICY_NOTE}\n\nاستمتع بالمشاهدة! 🎬🔍"
+                        
+                        send_message_in_chunks(sender_id, response_text)
+                        
                     else:
-                        response_text = get_ai_response(user_text)
-                    
-                    # إرسال الرد بمحاكاة الكتابة البشرية
-                    send_message_in_chunks(sender_id, response_text)
-                    
+                        send_message_in_chunks(sender_id, get_ai_response(user_text))
+                        
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
