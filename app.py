@@ -1,12 +1,9 @@
 import os
-import hmac
-import hashlib
-import json
+import re
 import requests
 from flask import Flask, request, abort
 from groq import Groq
 from dotenv import load_dotenv
-import re
 
 load_dotenv()
 
@@ -21,16 +18,45 @@ CONAN_LINK = "https://dz4link.com/mounirdjouida"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-def user_wants_link(text):
-    """التحقق مما إذا كان المستخدم يطلب حلقة أو رابط بشكل صريح"""
+# رسالة التوضيح الثابتة
+POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
+
+def extract_episode_info(text):
+    """استخراج معلومات الحلقة/الجزء من رسالة المستخدم"""
     text = text.lower()
-    keywords = [
-        'حلقة', 'الحلقة', 'كونان', 'المحقق كونان', 'رابط', 'شاهد', 'أريد', 
-        'اعطني', 'أعطني', 'من فضلك', 'جزء', 'الأجزاء', 'episode', 'link', 'watch'
-    ]
-    # يشترط وجود كلمتين على الأقل من الكلمات المفتاحية لتأكيد الطلب
-    matches = [k for k in keywords if k in text]
-    return len(matches) >= 2
+    info = {"type": None, "number": None}
+    
+    numbers = re.findall(r'\d+', text)
+    if numbers:
+        info["number"] = numbers[0]
+    
+    if any(k in text for k in ['حلقة', 'الحلقة', 'episode', 'ep']):
+        info["type"] = "حلقة"
+    elif any(k in text for k in ['جزء', 'الأجزاء', 'part', 'parts']):
+        info["type"] = "جزء"
+    elif 'كونان' in text or 'المحقق كونان' in text:
+        info["type"] = "عام"
+    
+    return info
+
+def generate_custom_prefix(info):
+    """توليد جملة مخصصة حسب نوع الطلب"""
+    if info["type"] == "حلقة" and info["number"]:
+        return f"🎬 يمكنك مشاهدة الجزء المتاح من الحلقة {info['number']} من المحقق كونان من هنا:"
+    elif info["type"] == "جزء" and info["number"]:
+        return f"📺 الجزء {info['number']} من المحقق كونان متاح للمشاهدة من هنا:"
+    elif info["type"] == "حلقة":
+        return "🎬 يمكنك مشاهدة الأجزاء المتاحة من حلقات المحقق كونان من هنا:"
+    elif info["type"] == "جزء":
+        return "📺 أجزاء المحقق كونان متاحة للمشاهدة من هنا:"
+    else:
+        return "👉 شاهد محتوى المحقق كونان المتاح من هنا مباشرة:"
+
+def user_wants_conan_content(text):
+    """التحقق مما إذا كان المستخدم يطلب محتوى المحقق كونان"""
+    text = text.lower()
+    keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'شاهد', 'رابط', 'أريد', 'اعطني', 'أعطني', 'من فضلك', 'episode', 'part', 'watch', 'link']
+    return any(k in text for k in keywords)
 
 def get_ai_response(user_message):
     try:
@@ -40,9 +66,9 @@ def get_ai_response(user_message):
                 {"role": "system", "content": f"""أنت مساعد رسمي لصفحة المحقق كونان على فيسبوك. 
 مهمتك:
 1- الرد بلطف وود باللغة العربية على استفسارات المستخدمين حول المحقق كونان.
-2- إذا طلب المستخدم حلقة أو رابط للمشاهدة بشكل صريح، قل له: "👉 شاهد جميع الحلقات من هنا مباشرة: {CONAN_LINK}"
-3- لا ترسل الرابط تلقائياً إلا إذا طلبه المستخدم بوضوح.
-4- كن مختصراً وودوداً في ردودك."""},
+2- إذا سأل المستخدم عن حلقة كاملة، وضّح له بلطف: "{POLICY_NOTE}"
+3- كن مختصراً وودوداً في ردودك.
+4- لا ترسل روابط إلا إذا طُلب منك ذلك صراحة."""},
                 {"role": "user", "content": user_message}
             ],
             temperature=0.7,
@@ -91,9 +117,10 @@ def handle_webhook():
                     user_text = message['text']
                     send_typing_indicator(sender_id)
                     
-                    # التحقق من طلب الرابط
-                    if user_wants_link(user_text):
-                        response_text = f"👉 شاهد جميع حلقات المحقق كونان من هنا مباشرة:\n{CONAN_LINK}\n\nاستمتع بالمشاهدة! 🎬🔍"
+                    if user_wants_conan_content(user_text):
+                        info = extract_episode_info(user_text)
+                        prefix = generate_custom_prefix(info)
+                        response_text = f"{prefix}\n{CONAN_LINK}\n\n{POLICY_NOTE}\n\nاستمتع بالمشاهدة! 🎬🔍"
                     else:
                         response_text = get_ai_response(user_text)
                     
