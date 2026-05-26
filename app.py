@@ -1,279 +1,173 @@
-from fastapi import FastAPI, Request, HTTPException, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
-import os
-import logging
-import requests
-from groq import Groq
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import os, logging, requests, sqlite3, uuid, json
 from datetime import datetime
 
-# إعداد التطبيق
-app = FastAPI(title="Facebook AI Bot - Messenger & Comments")
-
-# إعداد التسجيل
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+app = FastAPI(title="Facebook AI Bot (Converted from Telegram)")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# إعدادات المتغيرات البيئية
+# ──────────────────────────────────────────────────────────────
+# إعدادات المتغيرات
+# ──────────────────────────────────────────────────────────────
 class Settings:
-    FACEBOOK_PAGE_TOKEN: str = os.getenv("FACEBOOK_PAGE_TOKEN", "")
-    FACEBOOK_APP_SECRET: str = os.getenv("FACEBOOK_APP_SECRET", "")
-    FACEBOOK_VERIFY_TOKEN: str = os.getenv("FACEBOOK_VERIFY_TOKEN", "201638725")
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    PORT: int = int(os.getenv("PORT", 8000))
+    PAGE_TOKEN = os.getenv("FACEBOOK_PAGE_TOKEN", "")
+    APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
+    VERIFY_TOKEN = os.getenv("FACEBOOK_VERIFY_TOKEN", "fb_bot_verify_2024")
+    PORT = int(os.getenv("PORT", 8000))
 
 settings = Settings()
 
-# تهيئة عميل Groq
-groq_client = Groq(api_key=settings.GROQ_API_KEY)
+# ──────────────────────────────────────────────────────────────
+# قاعدة البيانات
+# ──────────────────────────────────────────────────────────────
+conn = sqlite3.connect("fb_bot_data.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.executescript("""
+CREATE TABLE IF NOT EXISTS users (
+    psid TEXT PRIMARY KEY,
+    model TEXT DEFAULT 'auto',
+    conv_state TEXT DEFAULT 'main_menu',
+    last_active TEXT
+);
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    psid TEXT,
+    role TEXT,
+    content TEXT,
+    timestamp TEXT
+);
+""")
+conn.commit()
 
-# موجه النظام للذكاء الاصطناعي
-SYSTEM_PROMPT = """
-أنت مساعد ذكي لخدمة العملاء لصفحة فيسبوك.
-- رد بلغة المستخدم (عربي/إنجليزي).
-- كن مختصراً ومفيداً (2-3 جمل كحد أقصى).
-- كن ودوداً ومهنياً.
-- إذا كان السؤال خارج نطاقك، اعتذر بلطف واطلب التواصل عبر الرسالة الخاصة.
-- لا تذكر أنك ذكاء اصطناعي إلا إذا سُئلت مباشرة.
-- استخدم الإيموجي باعتدال 😊
-"""
+SUPPORTED_MODELS = {
+    "auto": "🤖 تلقائي",
+    "gpt-4": "🚀 GPT-4",
+    "gpt-4o": "🦾 GPT-4o",
+    "gpt-3.5-turbo": "💨 GPT-3.5"
+}
 
-def generate_ai_reply(comment_text: str, post_context: str = "") -> str:
-    """توليد رد ذكي باستخدام Groq API"""
+# ──────────────────────────────────────────────────────────────
+# دوال فيسبوك الأساسية
+# ──────────────────────────────────────────────────────────────
+def send_fb_message(psid: str, text: str, quick_replies: list = None):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={settings.PAGE_TOKEN}"
+    payload = {"recipient": {"id": psid}, "message": {"text": text}}
+    if quick_replies:
+        payload["message"]["quick_replies"] = quick_replies
     try:
-        prompt = f"""
-        سياق المنشور: {post_context}
-        التعليق/الرسالة: {comment_text}
-        
-        الرد المناسب:
-        """
-        
-        response = groq_client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=150,
-            timeout=10
-        )
-        
-        return response.choices[0].message.content.strip()
-    
+        res = requests.post(url, json=payload, timeout=10)
+        return res.json()
     except Exception as e:
-        logger.error(f"❌ خطأ في Groq API: {e}")
-        return "شكراً لتواصلك! 🙏 سيقوم فريقنا بالرد عليك قريباً."
+        logger.error(f"FB Send Error: {e}")
 
-def reply_to_facebook_comment(comment_id: str, reply_text: str) -> dict:
-    """إرسال رد على تعليق في فيسبوك"""
+def send_typing(psid: str):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={settings.PAGE_TOKEN}"
+    requests.post(url, json={"recipient": {"id": psid}, "sender_action": "typing"}, timeout=5)
+
+def show_main_menu(psid: str):
+    quick_replies = [
+        {"content_type": "text", "title": "💬 محادثة جديدة", "payload": "NEW_CONV"},
+        {"content_type": "text", "title": "🤖 تغيير النموذج", "payload": "CHANGE_MODEL"},
+        {"content_type": "text", "title": "📜 محفوظاتي", "payload": "MY_PROMPTS"},
+        {"content_type": "text", "title": "⚙️ الإعدادات", "payload": "SETTINGS"}
+    ]
+    send_fb_message(psid, "👋 مرحباً! اختر من القائمة أدناه:", quick_replies)
+
+# ──────────────────────────────────────────────────────────────
+# منطق الذكاء الاصطناعي (نفس منطق تيليجرام)
+# ──────────────────────────────────────────────────────────────
+HEADERS = {
+    "User-Agent": "ChatGPT/1.2027.000 (Android 15; RMX3834; build 2700000)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "oai-package-name": "com.Modderme",
+    "oai-client-type": "android",
+    "oai-device-id": "84329164059103383964",
+    "Cookie": "__cflb=04dTod5Jcx9DYJeMeKbyj32ve2B3i9pLVRxJxEAaKD; ..." # ⚠️ حدّث هذا بقيمة حديثة
+}
+
+def get_conduit_token():
     try:
-        url = f"https://graph.facebook.com/v21.0/{comment_id}/comments"
-        params = {
-            "message": reply_text,
-            "access_token": settings.FACEBOOK_PAGE_TOKEN
-        }
-        
-        response = requests.post(url, params=params, timeout=10)
-        result = response.json()
-        
-        if response.status_code == 200:
-            logger.info(f"✅ تم الرد على التعليق {comment_id} بنجاح")
-        else:
-            logger.error(f"❌ فشل الرد على التعليق: {result}")
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"❌ خطأ في إرسال الرد: {e}")
-        return {"error": str(e)}
+        res = requests.post("https://android.chat.openai.com/backend-api/f/conversation/prepare", 
+                            json={"action": "next", "model": "auto"}, headers=HEADERS, timeout=15)
+        return res.json().get("conduit_token") if res.status_code == 200 else None
+    except: return None
 
-def send_messenger_reply(recipient_id: str, reply_text: str) -> dict:
-    """إرسال رد عبر Messenger API"""
-    try:
-        url = f"https://graph.facebook.com/v21.0/me/messages"
-        params = {"access_token": settings.FACEBOOK_PAGE_TOKEN}
-        json_data = {
-            "recipient": {"id": recipient_id},
-            "message": {"text": reply_text}
-        }
-        
-        response = requests.post(url, params=params, json=json_data, timeout=10)
-        result = response.json()
-        
-        if response.status_code == 200:
-            logger.info(f"✅ تم إرسال رسالة خاصة إلى {recipient_id}")
-        else:
-            logger.error(f"❌ فشل إرسال الرسالة: {result}")
-        
-        return result
+def ask_ai(psid: str, user_msg: str):
+    cursor.execute("SELECT model FROM users WHERE psid=?", (psid,))
+    model = cursor.fetchone()[0] if cursor.fetchone() else "auto"
     
-    except Exception as e:
-        logger.error(f"❌ خطأ في إرسال الرسالة: {e}")
-        return {"error": str(e)}
+    token = get_conduit_token()
+    if not token:
+        send_fb_message(psid, "⚠️ فشل الاتصال بالخادم. حاول لاحقاً.")
+        return
 
-def handle_messaging_event(messaging_event: dict):
-    """معالجة رسالة خاصة من Messenger"""
-    try:
-        sender_id = messaging_event.get("sender", {}).get("id")
-        message = messaging_event.get("message", {})
-        message_text = message.get("text", "")
-        mid = message.get("mid", "")
-        
-        # تجاهل إذا لم يكن هناك نص
-        if not message_text:
-            logger.info("⏭️ تجاهل رسالة بدون نص")
-            return
-        
-        # تجاهل إذا كانت الرسالة من البوت نفسه (message_echoes)
-        if messaging_event.get("sender", {}).get("id") == messaging_event.get("recipient", {}).get("id"):
-            logger.info("⏭️ تجاهل رسالة من البوت نفسه")
-            return
-        
-        logger.info(f"💬 رسالة خاصة من {sender_id}: {message_text[:50]}...")
-        
-        # توليد الرد الذكي
-        ai_reply = generate_ai_reply(message_text, post_context="Private Message via Messenger")
-        logger.info(f"🤖 AI Reply: {ai_reply}")
-        
-        # إرسال الرد عبر Messenger API
-        if sender_id and ai_reply:
-            send_messenger_reply(sender_id, ai_reply)
+    headers = HEADERS.copy()
+    headers["Conduit-Token"] = token
     
-    except Exception as e:
-        logger.error(f"❌ خطأ في معالجة رسالة Messenger: {e}")
-
-@app.get("/")
-async def root():
-    """صفحة رئيسية للتحقق من عمل التطبيق"""
-    return {
-        "status": "🤖 Facebook AI Bot (Messenger + Comments) is running!",
-        "timestamp": datetime.now().isoformat(),
-        "version": "2.0.0",
-        "features": ["Comments Auto-Reply", "Messenger Auto-Reply"]
+    payload = {
+        "action": "next",
+        "messages": [{"id": str(uuid.uuid4()), "author": {"role": "user"}, 
+                      "content": {"content_type": "text", "parts": [user_msg]}}],
+        "model": model,
+        "stream": False
     }
-
-@app.get("/webhook")
-async def verify_webhook(
-    hub_mode: str = Query(..., alias="hub.mode"),
-    hub_challenge: str = Query(..., alias="hub.challenge"),
-    hub_verify_token: str = Query(..., alias="hub.verify_token")
-):
-    """
-    التحقق من Webhook عند الإعداد الأولي من فيسبوك
-    """
-    logger.info(f"🔍 Webhook verification: mode={hub_mode}, token={hub_verify_token}")
     
-    if hub_mode == "subscribe" and hub_verify_token == settings.FACEBOOK_VERIFY_TOKEN:
-        logger.info("✅ Webhook verified successfully")
-        return PlainTextResponse(content=hub_challenge)
-    else:
-        logger.error("❌ Webhook verification failed")
-        raise HTTPException(status_code=403, detail="Verification failed")
+    send_typing(psid)
+    try:
+        res = requests.post("https://android.chat.openai.com/backend-api/f/conversation", 
+                            headers=headers, json=payload, timeout=30)
+        if res.status_code == 200:
+            data = res.json()
+            reply = data.get("message", {}).get("content", {}).get("parts", [""])[0]
+            send_fb_message(psid, reply)
+            cursor.execute("INSERT INTO messages (psid, role, content, timestamp) VALUES (?,?,?,?)",
+                           (psid, "bot", reply, datetime.now().isoformat()))
+            conn.commit()
+        else:
+            send_fb_message(psid, f"❌ خطأ: {res.status_code}")
+    except Exception as e:
+        send_fb_message(psid, f"️ خطأ: {str(e)[:100]}")
+
+# ──────────────────────────────────────────────────────────────
+# معالجة الويب هوك
+# ──────────────────────────────────────────────────────────────
+@app.get("/webhook")
+async def verify_webhook(mode: str, challenge: str, verify_token: str):
+    if mode == "subscribe" and verify_token == settings.VERIFY_TOKEN:
+        return challenge
+    raise HTTPException(403, "Invalid token")
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
-    """
-    معالجة أحداث فيسبوك (تعليقات على المنشورات + رسائل Messenger)
-    """
-    try:
-        data = await request.json()
-        logger.info(f"📥 Received webhook: {data}")
-        
-        # التحقق من أن الحدث من صفحة
-        if data.get("object") != "page":
-            logger.info("⏭️ تجاهل: ليس page object")
-            return JSONResponse(content={"status": "ignored - not a page object"})
-        
-        # معالجة كل entry في البيانات
-        for entry in data.get("entry", []):
-            page_id = entry.get("id")
-            logger.debug(f"📄 معالجة أحداث الصفحة: {page_id}")
+    data = await request.json()
+    for entry in data.get("entry", []):
+        for msg in entry.get("messaging", []):
+            psid = msg["sender"]["id"]
+            text = msg.get("message", {}).get("text", "")
+            payload = msg.get("message", {}).get("quick_reply", {}).get("payload", "")
             
-            # ✅ 1. معالجة التعليقات على المنشورات (Feed)
-            for change in entry.get("changes", []):
-                if change.get("field") == "feed":
-                    value = change.get("value", {})
-                    
-                    # استخراج معلومات التعليق
-                    comment_id = value.get("comment_id")
-                    post_id = value.get("post_id")
-                    message = value.get("message", "")
-                    sender_info = value.get("from", {})
-                    sender_name = sender_info.get("name", "Unknown")
-                    
-                    # تجاهل إذا كان التعليق من البوت نفسه
-                    if "AI Bot" in sender_name or "Bot" in sender_name:
-                        logger.info("⏭️ تجاوز التعليق من البوت نفسه")
-                        continue
-                    
-                    # تجاهل التعليقات الفارغة
-                    if not message or not comment_id:
-                        logger.warning("⚠️ تعليق فارغ أو بدون ID")
-                        continue
-                    
-                    logger.info(f"💬 تعليق جديد من {sender_name}: {message[:50]}...")
-                    
-                    # توليد الرد الذكي
-                    ai_reply = generate_ai_reply(
-                        comment_text=message,
-                        post_context=f"Post ID: {post_id}"
-                    )
-                    
-                    logger.info(f"🤖 AI Reply: {ai_reply}")
-                    
-                    # إرسال الرد إلى فيسبوك
-                    if comment_id and ai_reply:
-                        reply_result = reply_to_facebook_comment(comment_id, ai_reply)
-                        logger.info(f"📤 نتيجة الرد: {reply_result}")
+            # تسجيل/تحديث المستخدم
+            cursor.execute("INSERT OR IGNORE INTO users (psid) VALUES (?)", (psid,))
+            cursor.execute("UPDATE users SET last_active=? WHERE psid=?", (datetime.now().isoformat(), psid))
+            conn.commit()
             
-            # ✅ 2. معالجة الرسائل الخاصة (Messenger)
-            for messaging_event in entry.get("messaging", []):
-                handle_messaging_event(messaging_event)
-        
-        return JSONResponse(content={"status": "success", "message": "Webhook processed"})
-    
-    except Exception as e:
-        logger.error(f"❌ خطأ في معالجة webhook: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+            if payload == "NEW_CONV":
+                send_fb_message(psid, "✅ تم بدء محادثة جديدة. اكتب سؤالك:")
+            elif payload == "CHANGE_MODEL":
+                qr = [{"content_type": "text", "title": v, "payload": f"MODEL_{k}"} for k, v in SUPPORTED_MODELS.items()]
+                send_fb_message(psid, "🤖 اختر النموذج:", qr)
+            elif payload.startswith("MODEL_"):
+                model = payload.split("_")[1]
+                cursor.execute("UPDATE users SET model=? WHERE psid=?", (model, psid))
+                conn.commit()
+                send_fb_message(psid, f"✅ تم تفعيل النموذج: {SUPPORTED_MODELS.get(model, model)}")
+            elif text:
+                ask_ai(psid, text)
+                
+    return JSONResponse({"status": "ok"})
 
-@app.get("/health")
-async def health_check():
-    """فحص صحة التطبيق"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "service": "facebook-ai-bot",
-        "app_id": "1227734325927164"
-    }
-
-@app.get("/test-ai")
-async def test_ai():
-    """اختبار الذكاء الاصطناعي"""
-    try:
-        test_comment = "مرحباً، كيف يمكنني المساعدة؟"
-        reply = generate_ai_reply(test_comment)
-        return {
-            "test_comment": test_comment,
-            "ai_reply": reply,
-            "status": "success"
-        }
-    except Exception as e:
-        return {
-            "error": str(e),
-            "status": "failed"
-        }
-
-# تشغيل التطبيق
 if __name__ == "__main__":
     import uvicorn
-    logger.info(f"🚀 Starting server on port {settings.PORT}")
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=settings.PORT,
-        reload=(settings.PORT == 8000),
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=settings.PORT)
