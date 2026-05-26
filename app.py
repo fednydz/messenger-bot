@@ -6,26 +6,43 @@ import requests
 from flask import Flask, request, abort
 from groq import Groq
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
 app = Flask(__name__)
 
-# تحميل المتغيرات من البيئة
+# المتغيرات
 VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
+CONAN_LINK = "https://dz4link.com/mounirdjouida"
 
-# تهيئة Groq
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+def user_wants_link(text):
+    """التحقق مما إذا كان المستخدم يطلب حلقة أو رابط بشكل صريح"""
+    text = text.lower()
+    keywords = [
+        'حلقة', 'الحلقة', 'كونان', 'المحقق كونان', 'رابط', 'شاهد', 'أريد', 
+        'اعطني', 'أعطني', 'من فضلك', 'جزء', 'الأجزاء', 'episode', 'link', 'watch'
+    ]
+    # يشترط وجود كلمتين على الأقل من الكلمات المفتاحية لتأكيد الطلب
+    matches = [k for k in keywords if k in text]
+    return len(matches) >= 2
 
 def get_ai_response(user_message):
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "أنت مساعد ذكي ودود يتحدث العربية بطلاقة. رد باختصار ووضوح."},
+                {"role": "system", "content": f"""أنت مساعد رسمي لصفحة المحقق كونان على فيسبوك. 
+مهمتك:
+1- الرد بلطف وود باللغة العربية على استفسارات المستخدمين حول المحقق كونان.
+2- إذا طلب المستخدم حلقة أو رابط للمشاهدة بشكل صريح، قل له: "👉 شاهد جميع الحلقات من هنا مباشرة: {CONAN_LINK}"
+3- لا ترسل الرابط تلقائياً إلا إذا طلبه المستخدم بوضوح.
+4- كن مختصراً وودوداً في ردودك."""},
                 {"role": "user", "content": user_message}
             ],
             temperature=0.7,
@@ -73,8 +90,14 @@ def handle_webhook():
                 if message and 'text' in message:
                     user_text = message['text']
                     send_typing_indicator(sender_id)
-                    ai_reply = get_ai_response(user_text)
-                    send_messenger_message(sender_id, ai_reply)
+                    
+                    # التحقق من طلب الرابط
+                    if user_wants_link(user_text):
+                        response_text = f"👉 شاهد جميع حلقات المحقق كونان من هنا مباشرة:\n{CONAN_LINK}\n\nاستمتع بالمشاهدة! 🎬🔍"
+                    else:
+                        response_text = get_ai_response(user_text)
+                    
+                    send_messenger_message(sender_id, response_text)
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
