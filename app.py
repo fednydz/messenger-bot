@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import requests
 from flask import Flask, request, abort
 from groq import Groq
@@ -15,32 +16,25 @@ PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 CONAN_LINK = "https://dz4link.com/mounirdjouida"
+POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# رسالة التوضيح الثابتة
-POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
-
 def extract_episode_info(text):
-    """استخراج معلومات الحلقة/الجزء من رسالة المستخدم"""
     text = text.lower()
     info = {"type": None, "number": None}
-    
     numbers = re.findall(r'\d+', text)
     if numbers:
         info["number"] = numbers[0]
-    
     if any(k in text for k in ['حلقة', 'الحلقة', 'episode', 'ep']):
         info["type"] = "حلقة"
     elif any(k in text for k in ['جزء', 'الأجزاء', 'part', 'parts']):
         info["type"] = "جزء"
     elif 'كونان' in text or 'المحقق كونان' in text:
         info["type"] = "عام"
-    
     return info
 
 def generate_custom_prefix(info):
-    """توليد جملة مخصصة حسب نوع الطلب"""
     if info["type"] == "حلقة" and info["number"]:
         return f"🎬 يمكنك مشاهدة الجزء المتاح من الحلقة {info['number']} من المحقق كونان من هنا:"
     elif info["type"] == "جزء" and info["number"]:
@@ -53,7 +47,6 @@ def generate_custom_prefix(info):
         return "👉 شاهد محتوى المحقق كونان المتاح من هنا مباشرة:"
 
 def user_wants_conan_content(text):
-    """التحقق مما إذا كان المستخدم يطلب محتوى المحقق كونان"""
     text = text.lower()
     keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'شاهد', 'رابط', 'أريد', 'اعطني', 'أعطني', 'من فضلك', 'episode', 'part', 'watch', 'link']
     return any(k in text for k in keywords)
@@ -79,22 +72,47 @@ def get_ai_response(user_message):
         print(f"Groq Error: {e}")
         return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة لاحقاً."
 
-def send_messenger_message(recipient_id, message_text):
+def send_messenger_action(recipient_id, action):
+    """إرسال إجراء للمراسل: typing_on / typing_off"""
     params = {
         "recipient": {"id": recipient_id},
-        "message": {"text": message_text},
-        "access_token": PAGE_ACCESS_TOKEN
-    }
-    response = requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
-    return response.status_code == 200
-
-def send_typing_indicator(recipient_id):
-    params = {
-        "recipient": {"id": recipient_id},
-        "sender_action": "typing_on",
+        "sender_action": action,
         "access_token": PAGE_ACCESS_TOKEN
     }
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
+
+def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_char=0.05):
+    """
+    إرسال الرسالة على أجزاء مع محاكاة الكتابة البشرية
+    - typing_per_char: وقت الكتابة التقريبي لكل حرف (لإبقاء مؤشر الكتابة)
+    - chunk_delay: فاصل زمني بين إرسال كل جزء
+    """
+    # حساب وقت "الكتابة" الكلي بناءً على طول الرسالة
+    total_typing_time = min(len(full_text) * typing_per_char, 8)  # حد أقصى 8 ثواني
+    
+    # إبقاء مؤشر الكتابة نشطاً
+    send_messenger_action(recipient_id, "typing_on")
+    time.sleep(total_typing_time)
+    
+    # تقسيم الرسالة إلى أجزاء منطقية (أسطر أو جمل)
+    chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
+    if not chunks:
+        chunks = [full_text]
+    
+    # إرسال كل جزء على حدة
+    for i, chunk in enumerate(chunks):
+        params = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": chunk},
+            "access_token": PAGE_ACCESS_TOKEN
+        }
+        requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
+        # فاصل صغير بين الأجزاء (إلا في آخر جزء)
+        if i < len(chunks) - 1:
+            time.sleep(chunk_delay)
+    
+    # إيقاف مؤشر الكتابة بعد الانتهاء
+    send_messenger_action(recipient_id, "typing_off")
 
 @app.route('/webhook', methods=['GET'])
 def verify_webhook():
@@ -115,7 +133,6 @@ def handle_webhook():
                 message = messaging_event.get('message', {})
                 if message and 'text' in message:
                     user_text = message['text']
-                    send_typing_indicator(sender_id)
                     
                     if user_wants_conan_content(user_text):
                         info = extract_episode_info(user_text)
@@ -124,7 +141,9 @@ def handle_webhook():
                     else:
                         response_text = get_ai_response(user_text)
                     
-                    send_messenger_message(sender_id, response_text)
+                    # إرسال الرد بمحاكاة الكتابة البشرية
+                    send_message_in_chunks(sender_id, response_text)
+                    
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
