@@ -1,173 +1,87 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-import os, logging, requests, sqlite3, uuid, json
-from datetime import datetime
+import os
+import hmac
+import hashlib
+import json
+import requests
+from flask import Flask, request, abort
+from groq import Groq
+from dotenv import load_dotenv
 
-app = FastAPI(title="Facebook AI Bot (Converted from Telegram)")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+load_dotenv()
 
-# ──────────────────────────────────────────────────────────────
-# إعدادات المتغيرات
-# ──────────────────────────────────────────────────────────────
-class Settings:
-    PAGE_TOKEN = os.getenv("FACEBOOK_PAGE_TOKEN", "")
-    APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
-    VERIFY_TOKEN = os.getenv("FACEBOOK_VERIFY_TOKEN", "fb_bot_verify_2024")
-    PORT = int(os.getenv("PORT", 8000))
+app = Flask(__name__)
 
-settings = Settings()
+# تحميل المتغيرات من البيئة
+VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
+PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 
-# ──────────────────────────────────────────────────────────────
-# قاعدة البيانات
-# ──────────────────────────────────────────────────────────────
-conn = sqlite3.connect("fb_bot_data.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.executescript("""
-CREATE TABLE IF NOT EXISTS users (
-    psid TEXT PRIMARY KEY,
-    model TEXT DEFAULT 'auto',
-    conv_state TEXT DEFAULT 'main_menu',
-    last_active TEXT
-);
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    psid TEXT,
-    role TEXT,
-    content TEXT,
-    timestamp TEXT
-);
-""")
-conn.commit()
+# تهيئة Groq
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-SUPPORTED_MODELS = {
-    "auto": "🤖 تلقائي",
-    "gpt-4": "🚀 GPT-4",
-    "gpt-4o": "🦾 GPT-4o",
-    "gpt-3.5-turbo": "💨 GPT-3.5"
-}
-
-# ──────────────────────────────────────────────────────────────
-# دوال فيسبوك الأساسية
-# ──────────────────────────────────────────────────────────────
-def send_fb_message(psid: str, text: str, quick_replies: list = None):
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={settings.PAGE_TOKEN}"
-    payload = {"recipient": {"id": psid}, "message": {"text": text}}
-    if quick_replies:
-        payload["message"]["quick_replies"] = quick_replies
+def get_ai_response(user_message):
     try:
-        res = requests.post(url, json=payload, timeout=10)
-        return res.json()
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "أنت مساعد ذكي ودود يتحدث العربية بطلاقة. رد باختصار ووضوح."},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.7,
+            max_tokens=512
+        )
+        return completion.choices[0].message.content
     except Exception as e:
-        logger.error(f"FB Send Error: {e}")
+        print(f"Groq Error: {e}")
+        return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة لاحقاً."
 
-def send_typing(psid: str):
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={settings.PAGE_TOKEN}"
-    requests.post(url, json={"recipient": {"id": psid}, "sender_action": "typing"}, timeout=5)
-
-def show_main_menu(psid: str):
-    quick_replies = [
-        {"content_type": "text", "title": "💬 محادثة جديدة", "payload": "NEW_CONV"},
-        {"content_type": "text", "title": "🤖 تغيير النموذج", "payload": "CHANGE_MODEL"},
-        {"content_type": "text", "title": "📜 محفوظاتي", "payload": "MY_PROMPTS"},
-        {"content_type": "text", "title": "⚙️ الإعدادات", "payload": "SETTINGS"}
-    ]
-    send_fb_message(psid, "👋 مرحباً! اختر من القائمة أدناه:", quick_replies)
-
-# ──────────────────────────────────────────────────────────────
-# منطق الذكاء الاصطناعي (نفس منطق تيليجرام)
-# ──────────────────────────────────────────────────────────────
-HEADERS = {
-    "User-Agent": "ChatGPT/1.2027.000 (Android 15; RMX3834; build 2700000)",
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "oai-package-name": "com.Modderme",
-    "oai-client-type": "android",
-    "oai-device-id": "84329164059103383964",
-    "Cookie": "__cflb=04dTod5Jcx9DYJeMeKbyj32ve2B3i9pLVRxJxEAaKD; ..." # ⚠️ حدّث هذا بقيمة حديثة
-}
-
-def get_conduit_token():
-    try:
-        res = requests.post("https://android.chat.openai.com/backend-api/f/conversation/prepare", 
-                            json={"action": "next", "model": "auto"}, headers=HEADERS, timeout=15)
-        return res.json().get("conduit_token") if res.status_code == 200 else None
-    except: return None
-
-def ask_ai(psid: str, user_msg: str):
-    cursor.execute("SELECT model FROM users WHERE psid=?", (psid,))
-    model = cursor.fetchone()[0] if cursor.fetchone() else "auto"
-    
-    token = get_conduit_token()
-    if not token:
-        send_fb_message(psid, "⚠️ فشل الاتصال بالخادم. حاول لاحقاً.")
-        return
-
-    headers = HEADERS.copy()
-    headers["Conduit-Token"] = token
-    
-    payload = {
-        "action": "next",
-        "messages": [{"id": str(uuid.uuid4()), "author": {"role": "user"}, 
-                      "content": {"content_type": "text", "parts": [user_msg]}}],
-        "model": model,
-        "stream": False
+def send_messenger_message(recipient_id, message_text):
+    params = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text},
+        "access_token": PAGE_ACCESS_TOKEN
     }
-    
-    send_typing(psid)
-    try:
-        res = requests.post("https://android.chat.openai.com/backend-api/f/conversation", 
-                            headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            data = res.json()
-            reply = data.get("message", {}).get("content", {}).get("parts", [""])[0]
-            send_fb_message(psid, reply)
-            cursor.execute("INSERT INTO messages (psid, role, content, timestamp) VALUES (?,?,?,?)",
-                           (psid, "bot", reply, datetime.now().isoformat()))
-            conn.commit()
-        else:
-            send_fb_message(psid, f"❌ خطأ: {res.status_code}")
-    except Exception as e:
-        send_fb_message(psid, f"️ خطأ: {str(e)[:100]}")
+    response = requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
+    return response.status_code == 200
 
-# ──────────────────────────────────────────────────────────────
-# معالجة الويب هوك
-# ──────────────────────────────────────────────────────────────
-@app.get("/webhook")
-async def verify_webhook(mode: str, challenge: str, verify_token: str):
-    if mode == "subscribe" and verify_token == settings.VERIFY_TOKEN:
-        return challenge
-    raise HTTPException(403, "Invalid token")
+def send_typing_indicator(recipient_id):
+    params = {
+        "recipient": {"id": recipient_id},
+        "sender_action": "typing_on",
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    data = await request.json()
-    for entry in data.get("entry", []):
-        for msg in entry.get("messaging", []):
-            psid = msg["sender"]["id"]
-            text = msg.get("message", {}).get("text", "")
-            payload = msg.get("message", {}).get("quick_reply", {}).get("payload", "")
-            
-            # تسجيل/تحديث المستخدم
-            cursor.execute("INSERT OR IGNORE INTO users (psid) VALUES (?)", (psid,))
-            cursor.execute("UPDATE users SET last_active=? WHERE psid=?", (datetime.now().isoformat(), psid))
-            conn.commit()
-            
-            if payload == "NEW_CONV":
-                send_fb_message(psid, "✅ تم بدء محادثة جديدة. اكتب سؤالك:")
-            elif payload == "CHANGE_MODEL":
-                qr = [{"content_type": "text", "title": v, "payload": f"MODEL_{k}"} for k, v in SUPPORTED_MODELS.items()]
-                send_fb_message(psid, "🤖 اختر النموذج:", qr)
-            elif payload.startswith("MODEL_"):
-                model = payload.split("_")[1]
-                cursor.execute("UPDATE users SET model=? WHERE psid=?", (model, psid))
-                conn.commit()
-                send_fb_message(psid, f"✅ تم تفعيل النموذج: {SUPPORTED_MODELS.get(model, model)}")
-            elif text:
-                ask_ai(psid, text)
-                
-    return JSONResponse({"status": "ok"})
+@app.route('/webhook', methods=['GET'])
+def verify_webhook():
+    mode = request.args.get('hub.mode')
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+    if mode == 'subscribe' and token == VERIFY_TOKEN:
+        return challenge, 200
+    abort(403)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=settings.PORT)
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    payload = request.get_json()
+    if payload.get('object') == 'page':
+        for entry in payload.get('entry', []):
+            for messaging_event in entry.get('messaging', []):
+                sender_id = messaging_event.get('sender', {}).get('id')
+                message = messaging_event.get('message', {})
+                if message and 'text' in message:
+                    user_text = message['text']
+                    send_typing_indicator(sender_id)
+                    ai_reply = get_ai_response(user_text)
+                    send_messenger_message(sender_id, ai_reply)
+        return "EVENT_RECEIVED", 200
+    return "OK", 200
+
+@app.route('/health', methods=['GET'])
+def health():
+    return {"status": "running"}, 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
