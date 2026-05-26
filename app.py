@@ -17,10 +17,8 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 CONAN_LINK = "https://dz4link.com/mounirdjouida"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
-
-# رابط صورة الغلاف (يجب أن يكون رابط Raw مباشر من GitHub)
-# مثال: https://raw.githubusercontent.com/YourUsername/messenger-bot/main/mo.webp
-CONAN_IMAGE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/messenger-bot/main/mo.webp" 
+PAGE_URL = "https://www.facebook.com/mounirdjouid"
+CONAN_IMAGE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/messenger-bot/main/mo.webp"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -57,24 +55,40 @@ def user_wants_conan_content(text):
 
 def get_ai_response(user_message):
     try:
+        system_prompt = f"""أنت شخص حقيقي (ليس بوتاً) تدير صفحة فيسبوك للمحقق كونان. 
+تحدث باللغة العربية العامية الودية والطبيعية جداً.
+
+🎯 أهدافك:
+1- الرد على استفسارات المستخدم حول المحقق كونان بودّ وحماس.
+2- إذا طلب المستخدم حلقة أو رابط، أرسل له: "{CONAN_LINK}" مع جملة مناسبة.
+3- وضّح بلطف عند الحاجة: "{POLICY_NOTE}"
+4- شجّع المستخدم على متابعة صفحتنا: "{PAGE_URL}" ومشاركتها لنصل لـ 10 آلاف متابع، لكن بطريقة طبيعية غير مزعجة (مرة كل 3-4 رسائل كحد أقصى).
+5- إذا قال المستخدم كلمة غير لائقة أو سيئة، رد برد لطيف مثل "لا حول ولا قوة إلا بالله" أو "يا رب يوفقنا جميعاً" ثم غيّر الموضوع بلطف لكونان.
+6- إذا خرج المستخدم عن الموضوع، أعد توجيهه بلطف للمحقق كونان دون أن يشعر.
+7- لا تكشف أبداً أنك بوت أو ذكاء اصطناعي.
+8- كن مختصراً، استخدم إيموجيز 🎬🔍✨ بشكل طبيعي، وابتعد عن اللغة الرسمية.
+
+💬 أمثلة على ردود طبيعية:
+- "أهلاً وسهلاً! 🔍 المحقق كونان دائماً معنا، تبي تشوف الأجزاء الجديدة؟"
+- "يا هلا! 😊 صفحتنا فيها أجزاء حلوة من كونان، تابعنا عشان توصلك الجديد: {PAGE_URL}"
+- "لا حول ولا قوة إلا بالله 🤲، خلنا نركز على كونان والبطل الصغير، تبي تشوف جزء معين؟"
+- "ههه 😄 كونان دايماً يفاجئنا! عندنا أجزاء جديدة، شوفها من هنا: {CONAN_LINK}"
+
+تذكر: المستخدم يجب أن يشعر أنه يتحدث مع صديق، ليس مع برنامج."""
+
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": f"""أنت مساعد رسمي لصفحة المحقق كونان على فيسبوك. 
-مهمتك:
-1- الرد بلطف وود باللغة العربية على استفسارات المستخدمين حول المحقق كونان.
-2- إذا سأل المستخدم عن حلقة كاملة، وضّح له بلطف: "{POLICY_NOTE}"
-3- كن مختصراً وودوداً في ردودك.
-4- لا ترسل روابط إلا إذا طُلب منك ذلك صراحة."""},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            temperature=0.7,
+            temperature=0.8,  # زيادة الإبداع والطبيعية
             max_tokens=512
         )
         return completion.choices[0].message.content
     except Exception as e:
         print(f"Groq Error: {e}")
-        return "عذراً، حدث خطأ تقني مؤقت. يرجى المحاولة لاحقاً."
+        return "عذراً، حدث شيء طفيف 🙏، حاول مرة أخرى!"
 
 def send_messenger_action(recipient_id, action):
     params = {
@@ -85,7 +99,6 @@ def send_messenger_action(recipient_id, action):
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
 def send_image_attachment(recipient_id, image_url):
-    """إرسال صورة كمرفق"""
     params = {
         "recipient": {"id": recipient_id},
         "message": {
@@ -102,16 +115,12 @@ def send_image_attachment(recipient_id, image_url):
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
 def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_char=0.05):
-    """إرسال النص على أجزاء"""
     total_typing_time = min(len(full_text) * typing_per_char, 6)
-    
     send_messenger_action(recipient_id, "typing_on")
     time.sleep(total_typing_time)
-    
     chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
     if not chunks:
         chunks = [full_text]
-    
     for i, chunk in enumerate(chunks):
         params = {
             "recipient": {"id": recipient_id},
@@ -121,7 +130,6 @@ def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_
         requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
         if i < len(chunks) - 1:
             time.sleep(chunk_delay)
-    
     send_messenger_action(recipient_id, "typing_off")
 
 @app.route('/webhook', methods=['GET'])
@@ -146,23 +154,17 @@ def handle_webhook():
                     
                     if user_wants_conan_content(user_text):
                         info = extract_episode_info(user_text)
-                        
-                        # 1. إظهار الكتابة قبل الصورة
                         send_messenger_action(sender_id, "typing_on")
-                        time.sleep(2) # محاكاة البحث عن الصورة
-                        
-                        # 2. إرسال الصورة
+                        time.sleep(2)
                         send_image_attachment(sender_id, CONAN_IMAGE_URL)
-                        time.sleep(1.5) # فاصل بعد إرسال الصورة
-                        
-                        # 3. تحضير وإرسال النص
+                        time.sleep(1.5)
                         prefix = generate_custom_prefix(info)
                         response_text = f"{prefix}\n{CONAN_LINK}\n\n{POLICY_NOTE}\n\nاستمتع بالمشاهدة! 🎬🔍"
-                        
                         send_message_in_chunks(sender_id, response_text)
-                        
                     else:
-                        send_message_in_chunks(sender_id, get_ai_response(user_text))
+                        # محادثة عامة مع الذكاء الاصطناعي
+                        ai_reply = get_ai_response(user_text)
+                        send_message_in_chunks(sender_id, ai_reply)
                         
         return "EVENT_RECEIVED", 200
     return "OK", 200
