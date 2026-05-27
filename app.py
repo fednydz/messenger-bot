@@ -1,14 +1,10 @@
 import os
 import re
 import time
-import json
 import requests
-import threading
-from datetime import datetime, timedelta
 from flask import Flask, request, abort
 from groq import Groq
 from dotenv import load_dotenv
-from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv()
 
@@ -20,54 +16,14 @@ PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 
-# ✅ الرابط الجديد المحدَّث
+# ✅ الرابط الجديد
 CONAN_LINK = "https://exe.io/vLPHW2I"
 
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
 CONAN_IMAGE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/messenger-bot/main/mo.webp"
 
-# ملف تخزين المستخدمين
-USERS_DB = "users.json"
-
 groq_client = Groq(api_key=GROQ_API_KEY)
-
-# ========== إدارة المستخدمين ==========
-def load_users():
-    if os.path.exists(USERS_DB):
-        with open(USERS_DB, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-def save_users(users):
-    with open(USERS_DB, 'w', encoding='utf-8') as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
-
-def add_or_update_user(user_id):
-    users = load_users()
-    now = datetime.now().isoformat()
-    if user_id not in users:
-        users[user_id] = {"first_seen": now, "last_message": now, "followup_sent": False}
-    else:
-        users[user_id]["last_message"] = now
-    save_users(users)
-
-def get_users_due_for_followup():
-    users = load_users()
-    due = []
-    now = datetime.now()
-    for uid, data in users.items():
-        last_msg = datetime.fromisoformat(data["last_message"])
-        if not data.get("followup_sent") and (now - last_msg) >= timedelta(hours=24):
-            due.append(uid)
-    return due
-
-def mark_followup_sent(user_id):
-    users = load_users()
-    if user_id in users:
-        users[user_id]["followup_sent"] = True
-        users[user_id]["followup_time"] = datetime.now().isoformat()
-        save_users(users)
 
 # ========== إرسال الرسائل ==========
 def send_messenger_action(recipient_id, action):
@@ -76,16 +32,6 @@ def send_messenger_action(recipient_id, action):
         "sender_action": action,
         "access_token": PAGE_ACCESS_TOKEN
     }
-    requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
-
-def send_text_message(recipient_id, text, tag=None):
-    params = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": text},
-        "access_token": PAGE_ACCESS_TOKEN
-    }
-    if tag:
-        params["tag"] = tag
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
 def send_image_attachment(recipient_id, image_url):
@@ -102,12 +48,15 @@ def send_image_attachment(recipient_id, image_url):
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
 def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_char=0.05):
+    """إرسال الرسالة على أجزاء مع محاكاة الكتابة البشرية"""
     total_typing_time = min(len(full_text) * typing_per_char, 6)
     send_messenger_action(recipient_id, "typing_on")
     time.sleep(total_typing_time)
+    
     chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
     if not chunks:
         chunks = [full_text]
+    
     for i, chunk in enumerate(chunks):
         params = {
             "recipient": {"id": recipient_id},
@@ -117,30 +66,8 @@ def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_
         requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
         if i < len(chunks) - 1:
             time.sleep(chunk_delay)
+    
     send_messenger_action(recipient_id, "typing_off")
-
-def send_followup_message(user_id):
-    """إرسال رسالة المتابعة بعد 24 ساعة"""
-    followup_texts = [
-        f"أهلاً وسهلاً! 👋 هل شفت الأجزاء الجديدة من المحقق كونان اللي نشرناها على الصفحة؟ 🔍\nشاهد جميع الحلقات من هنا مباشرة 🔗\n{CONAN_LINK}",
-        f"يا هلا! 😊 تذكير صغير: عندنا أجزاء جديدة من كونان، شوفتها ولا لا؟ 🎬\nشاهد جميع الحلقات من هنا مباشرة 🔗\n{CONAN_LINK}",
-        f"كيف حالك؟ 🤗 المحقق كونان ينتظرك! الأجزاء الجديدة متاحة:\nشاهد جميع الحلقات من هنا مباشرة 🔗\n{CONAN_LINK}",
-    ]
-    import random
-    message = random.choice(followup_texts) + f"\n\nتابع صفحتنا للمزيد: {PAGE_URL} ✨"
-    send_text_message(user_id, message, tag="NON_PROMOTIONAL_SUBSCRIPTION")
-    mark_followup_sent(user_id)
-    print(f"✓ تم إرسال متابعة للمستخدم: {user_id}")
-
-def check_and_send_followups():
-    """فحص المستخدمين وإرسال المتابعات المستحقة"""
-    due_users = get_users_due_for_followup()
-    for uid in due_users:
-        try:
-            send_followup_message(uid)
-            time.sleep(2)
-        except Exception as e:
-            print(f"✗ خطأ في إرسال متابعة لـ {uid}: {e}")
 
 # ========== استخراج المعلومات من رسالة المستخدم ==========
 def extract_episode_info(text):
@@ -228,50 +155,37 @@ def handle_webhook():
         for entry in payload.get('entry', []):
             for messaging_event in entry.get('messaging', []):
                 sender_id = messaging_event.get('sender', {}).get('id')
-                
-                if sender_id:
-                    add_or_update_user(sender_id)
-                
                 message = messaging_event.get('message', {})
                 if message and 'text' in message:
                     user_text = message['text']
                     
                     if user_wants_conan_content(user_text):
                         info = extract_episode_info(user_text)
+                        
+                        # إرسال صورة أولاً
                         send_messenger_action(sender_id, "typing_on")
                         time.sleep(2)
                         send_image_attachment(sender_id, CONAN_IMAGE_URL)
                         time.sleep(1.5)
+                        
+                        # تحضير وإرسال النص
                         prefix = generate_custom_prefix(info)
                         response_text = f"{prefix}\nشاهد جميع الحلقات من هنا مباشرة 🔗\n{CONAN_LINK}\n\n{POLICY_NOTE}\n\nاستمتع بالمشاهدة! 🎬🔍"
                         send_message_in_chunks(sender_id, response_text)
                     else:
+                        # محادثة عامة مع الذكاء الاصطناعي
                         ai_reply = get_ai_response(user_text)
                         send_message_in_chunks(sender_id, ai_reply)
                         
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
-# ========== نقطة فحص المتابعات (Cron) ==========
-@app.route('/cron/followup', methods=['GET'])
-def trigger_followup():
-    token = request.args.get('token')
-    if token != os.getenv('CRON_TOKEN', 'default_secret'):
-        abort(403)
-    check_and_send_followups()
-    return "Follow-up check completed", 200
-
+# ========== نقطة الصحة ==========
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "running", "users_count": len(load_users())}, 200
+    return {"status": "running"}, 200
 
-# ========== بدء الجدول الزمني ==========
-def init_scheduler():
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(check_and_send_followups, 'interval', hours=1)
-    scheduler.start()
-
+# ========== التشغيل ==========
 if __name__ == '__main__':
-    init_scheduler()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
