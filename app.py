@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random
 import requests
 from flask import Flask, request, abort
 from groq import Groq
@@ -15,15 +16,68 @@ VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
+PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
 
-# ✅ الرابط الجديد
+# ✅ الرابط الثابت
 CONAN_LINK = "https://exe.io/vLPHW2I"
-
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
-CONAN_IMAGE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/messenger-bot/main/mo.webp"
+
+# 🖼️ قائمة احتياطية للصور (في حالة فشل API)
+FALLBACK_IMAGES = [
+    "https://upload.wikimedia.org/wikipedia/en/6/6e/Detective_Conan_logo.png",
+    "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
+]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+# ========== Pexels API ==========
+def get_conan_images_from_pexels():
+    """
+    جلب صور المحقق كونان من Pexels API
+    Returns: قائمة بروابط الصور المباشرة
+    """
+    try:
+        headers = {
+            "Authorization": PEXELS_API_KEY
+        }
+        
+        params = {
+            "query": "Detective Conan anime",
+            "per_page": "15",
+            "orientation": "landscape"
+        }
+        
+        response = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers=headers,
+            params=params,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            images = []
+            
+            for photo in data.get('photos', []):
+                # استخدام الصورة المتوسطة الحجم
+                image_url = photo['src']['medium']
+                images.append(image_url)
+            
+            # إذا لم نجد صور، نرجع للقائمة الاحتياطية
+            return images if images else FALLBACK_IMAGES
+        else:
+            print(f"Pexels API Error: {response.status_code}")
+            return FALLBACK_IMAGES
+        
+    except Exception as e:
+        print(f"Pexels API Exception: {e}")
+        return FALLBACK_IMAGES
+
+def get_random_conan_image():
+    """الحصول على صورة عشوائية من Pexels API"""
+    images = get_conan_images_from_pexels()
+    return random.choice(images)
 
 # ========== إرسال الرسائل ==========
 def send_messenger_action(recipient_id, action):
@@ -69,7 +123,6 @@ def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_
     
     send_messenger_action(recipient_id, "typing_off")
 
-# ========== استخراج المعلومات من رسالة المستخدم ==========
 def extract_episode_info(text):
     text = text.lower()
     info = {"type": None, "number": None}
@@ -101,7 +154,6 @@ def user_wants_conan_content(text):
     keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'شاهد', 'رابط', 'أريد', 'اعطني', 'أعطني', 'من فضلك', 'episode', 'part', 'watch', 'link']
     return any(k in text for k in keywords)
 
-# ========== الذكاء الاصطناعي التفاعلي ==========
 def get_ai_response(user_message):
     try:
         system_prompt = f"""أنت صديق حقيقي ومحبوب 🎭 تدير صفحة المحقق كونان على فيسبوك.
@@ -112,7 +164,7 @@ def get_ai_response(user_message):
 💬 تفاعلي: تسأل المستخدم أسئلة بسيطة تشجعه على الاستمرار في الحديث.
 🎨 عاطفي: تتفاعل مع مشاعر المستخدم (فرح، حزن، ملل) وتواسيه أو تفرح معه.
 🔍 محب لكونان: تعرف كل شيء عن المحقق كونان وتشارك الحقائق الممتعة.
-🎪 مبدع: تستخدم إيموجيز 🎬🔍😂✨🤩 بشكل طبيعي، وتغير أسلوبك لتجنب الملل.
+🎪 مبدع: تستخدم إيموجيز 🎬🔍😂✨ بشكل طبيعي، وتغير أسلوبك لتجنب الملل.
 
 🎯 قواعد المحادثة:
 1️⃣ ابدأ ردك أحياناً بتحية دافئة أو نكتة خفيفة مرتبطة بالموضوع.
@@ -145,7 +197,7 @@ def get_ai_response(user_message):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            temperature=0.85,  # زيادة الإبداع والتفاعلية
+            temperature=0.85,
             max_tokens=512
         )
         return completion.choices[0].message.content
@@ -177,30 +229,40 @@ def handle_webhook():
                     if user_wants_conan_content(user_text):
                         info = extract_episode_info(user_text)
                         
-                        # إرسال صورة أولاً مع تفاعل
+                        # جلب صورة عشوائية من Pexels API
+                        selected_image = get_random_conan_image()
+                        
                         send_messenger_action(sender_id, "typing_on")
                         time.sleep(2)
-                        send_image_attachment(sender_id, CONAN_IMAGE_URL)
+                        send_image_attachment(sender_id, selected_image)
                         time.sleep(1.5)
                         
-                        # تحضير وإرسال النص التفاعلي
                         prefix = generate_custom_prefix(info)
                         response_text = f"{prefix}\nشاهد جميع الحلقات من هنا مباشرة 🔗\n{CONAN_LINK}\n\n{POLICY_NOTE}\n\nاستمتع بالمشاهدة! 🎬🔍\nوقل لي رأيك بعد ما تشوف الجزء 😉"
                         send_message_in_chunks(sender_id, response_text)
                     else:
-                        # محادثة تفاعلية مع الذكاء الاصطناعي
                         ai_reply = get_ai_response(user_text)
                         send_message_in_chunks(sender_id, ai_reply)
                         
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
-# ========== نقطة الصحة ==========
+# ========== اختبار API ==========
+@app.route('/test-images', methods=['GET'])
+def test_images():
+    """رابط لاختبار جلب الصور من Pexels"""
+    images = get_conan_images_from_pexels()
+    return {
+        "status": "success",
+        "api": "Pexels",
+        "images_count": len(images),
+        "sample_images": images[:5]  # عرض أول 5 صور
+    }, 200
+
 @app.route('/health', methods=['GET'])
 def health():
     return {"status": "running"}, 200
 
-# ========== التشغيل ==========
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
