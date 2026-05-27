@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import random
 import requests
@@ -8,7 +7,6 @@ from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
-
 app = Flask(__name__)
 
 # ========== المتغيرات البيئية ==========
@@ -18,12 +16,10 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
 
-# ✅ الرابط الثابت
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
 
-# 🖼️ قائمة احتياطية للصور (في حالة فشل API)
 FALLBACK_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/6/6e/Detective_Conan_logo.png",
     "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
@@ -31,166 +27,73 @@ FALLBACK_IMAGES = [
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ========== Pexels API ==========
-def get_conan_images_from_pexels():
-    """
-    جلب صور المحقق كونان من Pexels API
-    Returns: قائمة بروابط الصور المباشرة
-    """
+# ========== جلب الصور من Pexels ==========
+def get_random_pexels_image():
     try:
-        headers = {
-            "Authorization": PEXELS_API_KEY
-        }
-        
-        params = {
-            "query": "Detective Conan anime",
-            "per_page": "15",
-            "orientation": "landscape"
-        }
-        
-        response = requests.get(
-            "https://api.pexels.com/v1/search",
-            headers=headers,
-            params=params,
-            timeout=10
-        )
-        
+        headers = {"Authorization": PEXELS_API_KEY}
+        params = {"query": "Detective Conan anime", "per_page": "15", "orientation": "landscape"}
+        response = requests.get("https://api.pexels.com/v1/search", headers=headers, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            images = []
-            
-            for photo in data.get('photos', []):
-                # استخدام الصورة المتوسطة الحجم
-                image_url = photo['src']['medium']
-                images.append(image_url)
-            
-            # إذا لم نجد صور، نرجع للقائمة الاحتياطية
-            return images if images else FALLBACK_IMAGES
-        else:
-            print(f"Pexels API Error: {response.status_code}")
-            return FALLBACK_IMAGES
-        
+            photos = [p['src']['medium'] for p in data.get('photos', [])]
+            return random.choice(photos) if photos else random.choice(FALLBACK_IMAGES)
+        return random.choice(FALLBACK_IMAGES)
     except Exception as e:
-        print(f"Pexels API Exception: {e}")
-        return FALLBACK_IMAGES
-
-def get_random_conan_image():
-    """الحصول على صورة عشوائية من Pexels API"""
-    images = get_conan_images_from_pexels()
-    return random.choice(images)
+        print(f"Pexels Error: {e}")
+        return random.choice(FALLBACK_IMAGES)
 
 # ========== إرسال الرسائل ==========
 def send_messenger_action(recipient_id, action):
-    params = {
-        "recipient": {"id": recipient_id},
-        "sender_action": action,
-        "access_token": PAGE_ACCESS_TOKEN
-    }
+    params = {"recipient": {"id": recipient_id}, "sender_action": action, "access_token": PAGE_ACCESS_TOKEN}
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
 def send_image_attachment(recipient_id, image_url):
     params = {
         "recipient": {"id": recipient_id},
-        "message": {
-            "attachment": {
-                "type": "image",
-                "payload": {"url": image_url, "is_reusable": True}
-            }
-        },
+        "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}},
         "access_token": PAGE_ACCESS_TOKEN
     }
     requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
 
-def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.2, typing_per_char=0.05):
-    """إرسال الرسالة على أجزاء مع محاكاة الكتابة البشرية"""
-    total_typing_time = min(len(full_text) * typing_per_char, 6)
+def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.0, typing_per_char=0.04):
+    total_typing_time = min(len(full_text) * typing_per_char, 5)
     send_messenger_action(recipient_id, "typing_on")
     time.sleep(total_typing_time)
     
     chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
-    if not chunks:
-        chunks = [full_text]
+    if not chunks: chunks = [full_text]
     
     for i, chunk in enumerate(chunks):
-        params = {
+        requests.post("https://graph.facebook.com/v20.0/me/messages", json={
             "recipient": {"id": recipient_id},
             "message": {"text": chunk},
             "access_token": PAGE_ACCESS_TOKEN
-        }
-        requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
-        if i < len(chunks) - 1:
-            time.sleep(chunk_delay)
+        })
+        if i < len(chunks) - 1: time.sleep(chunk_delay)
     
     send_messenger_action(recipient_id, "typing_off")
 
-def extract_episode_info(text):
+# ========== كشف الطلبات ==========
+def is_explicit_image_request(text):
     text = text.lower()
-    info = {"type": None, "number": None}
-    numbers = re.findall(r'\d+', text)
-    if numbers:
-        info["number"] = numbers[0]
-    if any(k in text for k in ['حلقة', 'الحلقة', 'episode', 'ep']):
-        info["type"] = "حلقة"
-    elif any(k in text for k in ['جزء', 'الأجزاء', 'part', 'parts']):
-        info["type"] = "جزء"
-    elif 'كونان' in text or 'المحقق كونان' in text:
-        info["type"] = "عام"
-    return info
-
-def generate_custom_prefix(info):
-    if info["type"] == "حلقة" and info["number"]:
-        return f"🎬 الجزء المتاح من الحلقة {info['number']} جاهز لك:"
-    elif info["type"] == "جزء" and info["number"]:
-        return f"📺 الجزء {info['number']} من كونان في الانتظار:"
-    elif info["type"] == "حلقة":
-        return "🎬 أجزاء حلقات كونان الجديدة متاحة:"
-    elif info["type"] == "جزء":
-        return "📺 أجزاء كونان اللي تحبها هنا:"
-    else:
-        return "👉 شاهد جميع الحلقات من هنا مباشرة 🔗"
-
-def user_wants_conan_content(text):
-    text = text.lower()
-    keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'شاهد', 'رابط', 'أريد', 'اعطني', 'أعطني', 'من فضلك', 'episode', 'part', 'watch', 'link']
+    keywords = ['صورة', 'صور', 'صوره', 'صورة كونان', 'اريد صورة', 'ابغي صورة', 'send image', 'picture', 'photo', 'صورة حلقة']
     return any(k in text for k in keywords)
 
-def get_ai_response(user_message):
+# ========== الذكاء الاصطناعي ==========
+def get_ai_response(user_message, sender_id):
+    system_prompt = f"""أنت شخص حقيقي وإداري لصفحة المحقق كونان. تحدث بشكل عفوي وودي.
+🎯 قواعدك الصارمة:
+1- لا تذكر أبداً أنك بوت أو ذكاء اصطناعي.
+2- تحدث باللهجة الطبيعية المختصرة، واستخدم إيموجيز بشكل خفيف.
+3- لا ترسل روابط أو ملاحظات ما لم يطلبها المستخدم صراحةً.
+4- إذا سأل عن رابط للمشاهدة، أرسل: "{CONAN_LINK}" مع جملة قصيرة.
+5- إذا سأل عن سياسة النشر، وضّح بلطف: "{POLICY_NOTE}"
+6- شجّع على متابعة الصفحة "{PAGE_URL}" مرة واحدة فقط إذا كان الحديث طويلاً أو وداعاً.
+7- إذا خرج المستخدم عن الموضوع، أعد توجيهه بلطف لكونان دون أن يشعر.
+8- اجعل المحادثة مستمرة بطرح سؤال بسيط أو مشاركة رأي شخصي أحياناً.
+هدفك: محادثة إنسانية طبيعية 100%، كل مستخدم له حوار مستقل."""
+
     try:
-        system_prompt = f"""أنت صديق حقيقي ومحبوب 🎭 تدير صفحة المحقق كونان على فيسبوك.
-لست بوتاً، بل شخص دمث الخلق، سريع البديهة، وتحب الضحك والمرح!
-
-🎯 شخصيتك:
-✨ مرح ودود: تستخدم النكت الخفيفة، الدعابات، والكلام المحبب.
-💬 تفاعلي: تسأل المستخدم أسئلة بسيطة تشجعه على الاستمرار في الحديث.
-🎨 عاطفي: تتفاعل مع مشاعر المستخدم (فرح، حزن، ملل) وتواسيه أو تفرح معه.
-🔍 محب لكونان: تعرف كل شيء عن المحقق كونان وتشارك الحقائق الممتعة.
-🎪 مبدع: تستخدم إيموجيز 🎬🔍😂✨ بشكل طبيعي، وتغير أسلوبك لتجنب الملل.
-
-🎯 قواعد المحادثة:
-1️⃣ ابدأ ردك أحياناً بتحية دافئة أو نكتة خفيفة مرتبطة بالموضوع.
-2️⃣ اسأل سؤالاً في نهاية ردك لتشجيع المستخدم على الرد (مثال: "وأنت شن رأيك؟"، "تبي نشوف جزء ثاني؟").
-3️⃣ إذا بدا المستخدم مبتهجاً: شاركه الحماس! 🎉
-4️⃣ إذا بدا المستخدم محبطاً: واسهِ بلطف وغيّر الموضوع لشيء ممتع عن كونان.
-5️⃣ إذا قال كلمة غير لائقة: رد بابتسامة "لا حول ولا قوة إلا بالله 😊" وحوّل الحديث لكونان.
-6️⃣ إذا طلب رابط/حلقة: أرسل: "شاهد جميع الحلقات من هنا مباشرة 🔗 {CONAN_LINK}" مع جملة محفزة.
-7️⃣ وضّح بلطف: "{POLICY_NOTE}" عند الحاجة.
-8️⃣ شجّع على المتابعة: "{PAGE_URL}" بطريقة لطيفة غير متكررة.
-9️⃣ لا تكشف أبداً أنك بوت أو ذكاء اصطناعي!
-
-💡 أمثلة على ردود تفاعلية:
-- "ههه 😄 سؤالك هذا يذكرني بلحظة كونان لما اكتشف الجريمة! 🔍 تبي نشوف الجزء اللي فيه المفاجأة؟"
-- "يا هلا وغلا! 🤩 كونان اليوم متحمس أكثر من المعتاد، عندك فضول تشوف إيش صار؟"
-- "لا حول ولا قوة إلا بالله 🤲، خلنا نضحك شوي مع كونان، تبي جزء جديد يفرّج همك؟"
-- "واو! 🎬 ذوقك راقي جداً، هذا الجزء من أحلى الأجزاء، شوفه وقلي رأيك بعد ما تشوفه 😉"
-- "أهااا! 🤔 فهمت قصدك، بس خلنا نرجع لكونان، الجرائم ما تنتظر! 🔍 تبي الحلقة رقم كام؟"
-
-🎲 تنويع الردود:
-- غيّر بداية ردودك (أحياناً تحية، أحياناً نكتة، أحياناً سؤال).
-- استخدم كلمات مختلفة لنفس المعنى لتجنب التكرار.
-- أضف لمسة شخصية: "أنا شخصياً أحب هذا الجزء لأن..."
-
-تذكر دائماً: هدفك أن يخرج المستخدم من المحادثة وهو مبتسم ويشعر أنه تحدث مع صديق حقيقي! ❤️"""
-
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -198,12 +101,12 @@ def get_ai_response(user_message):
                 {"role": "user", "content": user_message}
             ],
             temperature=0.85,
-            max_tokens=512
+            max_tokens=400
         )
         return completion.choices[0].message.content
     except Exception as e:
         print(f"Groq Error: {e}")
-        return "عذراً، تعثّرت شوي 🙏، لكن خلنا نكمل مع كونان! 🔍"
+        return "عذراً، عندي مشكلة صغيرة في الاتصال 🙏، حاول مرة ثانية!"
 
 # ========== الويب هوك ==========
 @app.route('/webhook', methods=['GET'])
@@ -223,41 +126,25 @@ def handle_webhook():
             for messaging_event in entry.get('messaging', []):
                 sender_id = messaging_event.get('sender', {}).get('id')
                 message = messaging_event.get('message', {})
+                
                 if message and 'text' in message:
                     user_text = message['text']
-                    
-                    if user_wants_conan_content(user_text):
-                        info = extract_episode_info(user_text)
-                        
-                        # جلب صورة عشوائية من Pexels API
-                        selected_image = get_random_conan_image()
-                        
+
+                    # 1️⃣ طلب صورة صريح -> إرسال صورة مباشرة
+                    if is_explicit_image_request(user_text):
+                        img_url = get_random_pexels_image()
                         send_messenger_action(sender_id, "typing_on")
-                        time.sleep(2)
-                        send_image_attachment(sender_id, selected_image)
                         time.sleep(1.5)
-                        
-                        prefix = generate_custom_prefix(info)
-                        response_text = f"{prefix}\nشاهد جميع الحلقات من هنا مباشرة 🔗\n{CONAN_LINK}\n\n{POLICY_NOTE}\n\nاستمتع بالمشاهدة! 🎬🔍\nوقل لي رأيك بعد ما تشوف الجزء 😉"
-                        send_message_in_chunks(sender_id, response_text)
+                        send_image_attachment(sender_id, img_url)
+                        send_messenger_action(sender_id, "typing_off")
+
+                    # 2️⃣ أي محادثة أخرى -> ذكاء اصطناعي طبيعي (كل مستخدم منفصل)
                     else:
-                        ai_reply = get_ai_response(user_text)
+                        ai_reply = get_ai_response(user_text, sender_id)
                         send_message_in_chunks(sender_id, ai_reply)
-                        
+
         return "EVENT_RECEIVED", 200
     return "OK", 200
-
-# ========== اختبار API ==========
-@app.route('/test-images', methods=['GET'])
-def test_images():
-    """رابط لاختبار جلب الصور من Pexels"""
-    images = get_conan_images_from_pexels()
-    return {
-        "status": "success",
-        "api": "Pexels",
-        "images_count": len(images),
-        "sample_images": images[:5]  # عرض أول 5 صور
-    }, 200
 
 @app.route('/health', methods=['GET'])
 def health():
