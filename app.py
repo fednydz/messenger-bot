@@ -15,6 +15,7 @@ PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
+SIMSIMI_API_KEY = os.getenv('SIMSIMI_API_KEY')
 
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
@@ -26,6 +27,29 @@ FALLBACK_IMAGES = [
 ]
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+# ========== Simsimi API ==========
+def get_simsimi_response(user_message, sender_id):
+    """الحصول على رد من Simsimi API"""
+    try:
+        url = "https://api.simsimi.vn/v2/simtalk"
+        headers = {
+            "Content-Type": "application/json"
+        }
+        data = {
+            "text": user_message,
+            "lc": "ar",  # اللغة العربية
+            "key": SIMSIMI_API_KEY
+        }
+        
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('message', '')
+        return None
+    except Exception as e:
+        print(f"Simsimi Error: {e}")
+        return None
 
 # ========== جلب الصور من Pexels ==========
 def get_random_pexels_image():
@@ -79,7 +103,12 @@ def is_explicit_image_request(text):
     keywords = ['صورة', 'صور', 'صوره', 'صورة كونان', 'اريد صورة', 'ابغي صورة', 'send image', 'picture', 'photo', 'صورة حلقة']
     return any(k in text for k in keywords)
 
-# ========== الذكاء الاصطناعي ==========
+def is_conan_related(text):
+    text = text.lower()
+    keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'رابط', 'شاهد', 'episode', 'conan']
+    return any(k in text for k in keywords)
+
+# ========== الذكاء الاصطناعي (Groq) ==========
 def get_ai_response(user_message, sender_id):
     system_prompt = f"""أنت شخص حقيقي وإداري لصفحة المحقق كونان. تحدث بشكل عفوي وودي.
 🎯 قواعدك الصارمة:
@@ -106,7 +135,7 @@ def get_ai_response(user_message, sender_id):
         return completion.choices[0].message.content
     except Exception as e:
         print(f"Groq Error: {e}")
-        return "عذراً، عندي مشكلة صغيرة في الاتصال 🙏، حاول مرة ثانية!"
+        return None
 
 # ========== الويب هوك ==========
 @app.route('/webhook', methods=['GET'])
@@ -138,17 +167,41 @@ def handle_webhook():
                         send_image_attachment(sender_id, img_url)
                         send_messenger_action(sender_id, "typing_off")
 
-                    # 2️⃣ أي محادثة أخرى -> ذكاء اصطناعي طبيعي (كل مستخدم منفصل)
-                    else:
+                    # 2️⃣ مواضيع متعلقة بكونان -> Groq AI (متخصص)
+                    elif is_conan_related(user_text):
                         ai_reply = get_ai_response(user_text, sender_id)
-                        send_message_in_chunks(sender_id, ai_reply)
+                        if ai_reply:
+                            send_message_in_chunks(sender_id, ai_reply)
+                        else:
+                            # Fallback to Simsimi if Groq fails
+                            simsimi_reply = get_simsimi_response(user_text, sender_id)
+                            if simsimi_reply:
+                                send_message_in_chunks(sender_id, simsimi_reply)
+
+                    # 3️⃣ محادثات عامة -> Simsimi (طبيعي وسريع)
+                    else:
+                        simsimi_reply = get_simsimi_response(user_text, sender_id)
+                        if simsimi_reply:
+                            send_message_in_chunks(sender_id, simsimi_reply)
+                        else:
+                            # Fallback to Groq if Simsimi fails
+                            ai_reply = get_ai_response(user_text, sender_id)
+                            if ai_reply:
+                                send_message_in_chunks(sender_id, ai_reply)
 
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "running"}, 200
+    return {"status": "running", "apis": ["Simsimi", "Groq", "Pexels"]}, 200
+
+@app.route('/test-simsimi', methods=['GET'])
+def test_simsimi():
+    """اختبار Simsimi API"""
+    test_msg = "مرحبا"
+    reply = get_simsimi_response(test_msg, "test_user")
+    return {"status": "success", "test_message": test_msg, "reply": reply}, 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
