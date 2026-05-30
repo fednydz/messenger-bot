@@ -5,15 +5,16 @@ from urllib3.util.retry import Retry
 from flask import Flask, request, abort
 from dotenv import load_dotenv
 
+# إعداد السجلات
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 load_dotenv()
 app = Flask(__name__)
 
-# ========== المتغيرات ==========
+# ========== المتغيرات البيئية ==========
 VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
-APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
+APP_SECRET = os.getenv('FACEBOOK_APP_SECRET', '').strip()  # ✅ إزالة المسافات تلقائياً
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -22,7 +23,7 @@ CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
 
-# 🖼️ مكتبة صور موسعة (15+ صورة)
+# 🖼️ مكتبة صور متنوعة (15+ صورة مباشرة وقانونية)
 CONAN_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/6/6e/Detective_Conan_logo.png",
     "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
@@ -41,11 +42,11 @@ CONAN_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/thumb/d/d0/Case_Closed_vol_95.jpg/440px-Case_Closed_vol_95.jpg",
 ]
 
-# 🔄 ThreadPoolExecutor
+# 🔄 ThreadPoolExecutor للمعالجة غير المتزامنة
 executor = ThreadPoolExecutor(max_workers=15)
 FB_API_URL = "https://graph.facebook.com/v20.0/me/messages"
 
-# ========== Retry Session ==========
+# ========== إعداد Session مع Retry ذكي ==========
 def create_retry_session(retries=3, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504)):
     session = requests.Session()
     retry = Retry(total=retries, read=retries, connect=retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist, allowed_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
@@ -73,7 +74,7 @@ def get_openai_response(text):
                 {"role": "system", "content": f"""أنت مساعد رسمي ودود لصفحة المحقق كونان التي يديرها Mounir.
 مهمتك:
 1- الرد على المستخدمين بلهجة عربية طبيعية، مختصرة، وودية.
-2- إذا سُئلت عن هويتك: قل إنك مساعد ذكي لصفحة Mounير، صُممت لمساعدة المعجبين بكونان.
+2- إذا سُئلت عن هويتك: قل إنك مساعد ذكي لصفحة Mounir، صُممت لمساعدة المعجبين بكونان.
 3- إذا طُلب رابط المشاهدة: أرسل: {CONAN_LINK}
 4- إذا سُئلت عن سياسة النشر: وضّح بلطف: {POLICY_NOTE}
 5- شجّع على متابعة الصفحة: {PAGE_URL} بشكل طبيعي غير متكرر.
@@ -90,7 +91,7 @@ def get_openai_response(text):
         logger.error(f"❌ OpenAI Chat Error: {e}")
         return None
 
-# ========== ✅ Whisper gpt-4o-transcribe (أحدث وأسرع) ==========
+# ========== ✅ Whisper gpt-4o-transcribe ==========
 def transcribe_audio_whisper(audio_url):
     if not OPENAI_API_KEY: return None
     try:
@@ -99,16 +100,16 @@ def transcribe_audio_whisper(audio_url):
         audio_data = audio_res.content
         
         files = {"file": ("audio.mp3", io.BytesIO(audio_data), "audio/mpeg")}
-        data = {"model": "gpt-4o-transcribe"}  # ✅ النموذج الأحدث
+        data = {"model": "gpt-4o-transcribe"}
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
         res = openai_session.post("https://api.openai.com/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=35)
         if res.status_code == 200:
             text = res.json().get('text', '').strip()
-            logger.info(f"✅ gpt-4o-transcribe: {text[:60]}")
+            logger.info(f"✅ Transcribed: {text[:60]}")
             return text if text else None
         return None
     except Exception as e:
-        logger.error(f"❌ Whisper gpt-4o Error: {e}")
+        logger.error(f"❌ Whisper Error: {e}")
         return None
 
 # ========== ElevenLabs TTS ==========
@@ -126,7 +127,7 @@ def generate_audio_elevenlabs(text):
         logger.error(f"❌ ElevenLabs TTS Error: {e}")
         return None
 
-# ========== إرسال الرسائل ==========
+# ========== إرسال الرسائل (✅ access_token كـ Query Param) ==========
 def send_action(rid, act):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     data = {"recipient": {"id": rid}, "sender_action": act}
@@ -171,7 +172,7 @@ def handle_text(rid, txt):
     if reply:
         send_text_chunks(rid, reply)
     else:
-        fallback = "أهلاً! 😊 تفضل اسألني عن المحقق كونان، أنا مساعد صفحة Mounير هنا لمساعدتك!"
+        fallback = "أهلاً! 😊 تفضل اسألني عن المحقق كونان، أنا مساعد صفحة Mounir هنا لمساعدتك!"
         send_text_chunks(rid, fallback)
 
 def handle_voice(rid, aurl):
@@ -205,28 +206,38 @@ def process_message_background(sender_id, msg_data):
     except Exception as e:
         logger.error(f"❌ Background task failed for user {sender_id}: {e}")
 
-# ========== الويب هوك ==========
+# ========== الويب هوك (✅ تحقق آمن ومُصحَّح) ==========
 @app.route('/webhook', methods=['GET'])
 def verify():
-    if request.args.get('hub.mode')=='subscribe' and request.args.get('hub.verify_token')==VERIFY_TOKEN:
+    if request.args.get('hub.mode') == 'subscribe' and request.args.get('hub.verify_token') == VERIFY_TOKEN:
         return request.args.get('hub.challenge'), 200
     abort(403)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    signature = request.headers.get('X-Hub-Signature-256')
-    if signature and APP_SECRET:
-        expected = 'sha256=' + hmac.new(APP_SECRET.encode('utf-8'), request.data, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            logger.warning("⚠️ Invalid webhook signature! Blocked.")
+    # 🔐 1. الحصول على التوقيع والسر
+    signature = request.headers.get('X-Hub-Signature-256', '')
+    
+    # 2. التحقق قبل قراءة JSON (قاعدة أمنية فيسبوك)
+    if APP_SECRET and signature:
+        try:
+            raw_body = request.get_data()  # بايتس خام غير مشفرة
+            expected = 'sha256=' + hmac.new(APP_SECRET.encode('utf-8'), raw_body, hashlib.sha256).hexdigest()
+            
+            if not hmac.compare_digest(signature, expected):
+                logger.warning(f"⚠️ Invalid webhook signature! Blocked.")
+                abort(403)
+            logger.info("✅ Webhook signature verified")
+        except Exception as e:
+            logger.error(f"❌ Signature verification error: {e}")
             abort(403)
-    elif not APP_SECRET:
-        logger.warning("⚠️ FACEBOOK_APP_SECRET missing. Webhook unverified (INSECURE).")
 
-    payload = request.get_json()
-    if payload.get('object') != 'page':
+    # 📦 3. قراءة JSON بعد التأكد من الأمان
+    payload = request.get_json(silent=True)
+    if not payload or payload.get('object') != 'page':
         return "OK", 200
 
+    # ⚡ 4. إرسال المهام للمعالجة الخلفية فوراً
     for entry in payload.get('entry', []):
         for ev in entry.get('messaging', []):
             sid = ev.get('sender', {}).get('id')
@@ -240,9 +251,10 @@ def webhook():
 def health():
     return {"status":"running", "workers": executor._max_workers, "images": len(CONAN_IMAGES)}, 200
 
+# إيقاف نظيف للمؤشرات عند إعادة تشغيل Railway
 atexit.register(executor.shutdown, wait=False)
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    logger.info(f"🚀 Starting bot with gpt-4o-transcribe on port {port}")
+    logger.info(f"🚀 Starting secure async bot on port {port}")
     app.run(host='0.0.0.0', port=port)
