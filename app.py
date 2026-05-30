@@ -3,10 +3,8 @@ from flask import Flask, request, abort
 from groq import Groq
 from dotenv import load_dotenv
 
-# إعداد السجلات
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 load_dotenv()
 app = Flask(__name__)
 
@@ -19,6 +17,7 @@ PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
 SIMSIMI_API_KEY = os.getenv('SIMSIMI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')  # ✅ لـ Whisper STT
 
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
@@ -30,7 +29,6 @@ FALLBACK_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
 ]
 
-# تهيئة Groq
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # ========== دوال الكشف ==========
@@ -38,11 +36,9 @@ def is_bot_question(t): return any(k in t.lower() for k in ['بوت','روبوت
 def is_image_request(t): return any(k in t.lower() for k in ['صورة','صور','صوره','اريد صورة','picture','photo'])
 def is_conan_related(t): return any(k in t.lower() for k in ['كونان','المحقق كونان','حلقة','جزء','رابط','شاهد','episode'])
 
-# ========== APIs مع تسجيل الأخطاء ==========
+# ========== APIs ==========
 def get_groq_response(text):
-    if not groq_client:
-        logger.error("❌ Groq client not initialized - check GROQ_API_KEY")
-        return None
+    if not groq_client: return None
     try:
         sys = f"""أنت Mounir، صاحب صفحة المحقق كونان. تحدث بشكل عفوي، مختصر، وودي.
 القواعد: 1- لا تذكر أنك بوت أبداً. 2- إذا طُلب رابط: {CONAN_LINK} 3- سياسة النشر: {POLICY_NOTE} 4- شجّع على متابعة: {PAGE_URL} بشكل طبيعي.
@@ -52,35 +48,24 @@ def get_groq_response(text):
             messages=[{"role":"system","content":sys},{"role":"user","content":text}],
             temperature=0.8, max_tokens=300, timeout=20
         )
-        reply = comp.choices[0].message.content
-        logger.info(f"✅ Groq reply: {reply[:50]}...")
-        return reply
+        return comp.choices[0].message.content
     except Exception as e:
         logger.error(f"❌ Groq Error: {e}")
         return None
 
 def get_simsimi_response(text):
-    if not SIMSIMI_API_KEY:
-        logger.error("❌ SIMSIMI_API_KEY not set")
-        return None
+    if not SIMSIMI_API_KEY: return None
     try:
         res = requests.post("https://api.simsimi.vn/v2/simtalk",
             json={"text":text,"lc":"ar","key":SIMSIMI_API_KEY},
             headers={"Content-Type":"application/json"}, timeout=10)
-        if res.status_code == 200:
-            reply = res.json().get('message','')
-            logger.info(f"✅ Simsimi reply: {reply[:50]}...")
-            return reply
-        logger.error(f"❌ Simsimi HTTP {res.status_code}: {res.text}")
-        return None
+        return res.json().get('message','') if res.status_code == 200 else None
     except Exception as e:
         logger.error(f"❌ Simsimi Error: {e}")
         return None
 
 def get_random_pexels_image():
-    if not PEXELS_API_KEY:
-        logger.warning("⚠️ PEXELS_API_KEY not set - using fallback")
-        return random.choice(FALLBACK_IMAGES)
+    if not PEXELS_API_KEY: return random.choice(FALLBACK_IMAGES)
     try:
         res = requests.get("https://api.pexels.com/v1/search",
             headers={"Authorization":PEXELS_API_KEY},
@@ -88,25 +73,33 @@ def get_random_pexels_image():
         if res.status_code == 200:
             photos = [p['src']['medium'] for p in res.json().get('photos',[])]
             return random.choice(photos) if photos else random.choice(FALLBACK_IMAGES)
-        logger.error(f"❌ Pexels HTTP {res.status_code}")
         return random.choice(FALLBACK_IMAGES)
-    except Exception as e:
-        logger.error(f"❌ Pexels Error: {e}")
-        return random.choice(FALLBACK_IMAGES)
+    except: return random.choice(FALLBACK_IMAGES)
 
-def transcribe_audio(url):
-    if not ELEVENLABS_API_KEY: return None
+# ✅ Whisper STT (بديل موثوق لـ ElevenLabs STT)
+def transcribe_audio_whisper(audio_url):
+    if not OPENAI_API_KEY:
+        logger.warning("⚠️ OPENAI_API_KEY not set - skipping STT")
+        return None
     try:
-        audio = requests.get(url, timeout=10).content
-        res = requests.post("https://api.elevenlabs.io/v1/speech-to-text",
-            headers={"xi-api-key":ELEVENLABS_API_KEY},
-            files={"file":("audio.mp3",io.BytesIO(audio),"audio/mpeg")}, timeout=25)
-        return res.json().get('text','') if res.status_code==200 else None
+        # تحميل الصوت من فيسبوك
+        audio_data = requests.get(audio_url, timeout=15).content
+        # إرسال لـ Whisper
+        files = {"file": ("audio.mp3", io.BytesIO(audio_data), "audio/mpeg")}
+        data = {"model": "whisper-1"}
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        res = requests.post("https://api.openai.com/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=30)
+        if res.status_code == 200:
+            text = res.json().get('text', '').strip()
+            logger.info(f"✅ Whisper transcribed: {text[:60]}")
+            return text if text else None
+        logger.error(f"❌ Whisper HTTP {res.status_code}: {res.text}")
+        return None
     except Exception as e:
-        logger.error(f"❌ STT Error: {e}")
+        logger.error(f"❌ Whisper Error: {e}")
         return None
 
-def generate_audio(text):
+def generate_audio_elevenlabs(text):
     if not ELEVENLABS_API_KEY: return None
     try:
         res = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
@@ -114,7 +107,7 @@ def generate_audio(text):
             json={"text":text,"model_id":"eleven_multilingual_v2","voice_settings":{"stability":0.5,"similarity_boost":0.75}}, timeout=20)
         return res.content if res.status_code==200 else None
     except Exception as e:
-        logger.error(f"❌ TTS Error: {e}")
+        logger.error(f"❌ ElevenLabs TTS Error: {e}")
         return None
 
 # ========== إرسال الرسائل ==========
@@ -147,15 +140,11 @@ def send_voice(rid, abytes):
 # ========== معالجة المسارات ==========
 def generate_reply(text):
     if is_bot_question(text):
-        logger.info("🎯 Identity question detected")
         return BOT_IDENTITY_REPLY
-    # Groq أولاً (أكثر موثوقية للعربية)
     reply = get_groq_response(text)
     if reply: return reply
-    # Fallback لـ Simsimi
     reply = get_simsimi_response(text)
     if reply: return reply
-    logger.warning(f"⚠️ Both APIs failed for: {text[:30]}")
     return None
 
 def handle_text(rid, txt):
@@ -168,28 +157,35 @@ def handle_text(rid, txt):
     if reply:
         send_text_chunks(rid, reply)
     else:
-        # Fallback ودود بدلاً من "ما قدرت أفهم"
         fallback = "أهلاً! 😊 تفضل اسألني عن المحقق كونان أو أي شيء آخر، أنا هنا لمساعدتك!"
-        logger.info(f"🔄 Using friendly fallback for: {txt[:30]}")
         send_text_chunks(rid, fallback)
 
 def handle_voice(rid, aurl):
     send_action(rid,"typing_on")
-    transcribed = transcribe_audio(aurl)
+    # ✅ استخدام Whisper للاستماع
+    transcribed = transcribe_audio_whisper(aurl)
+    
     if not transcribed:
-        logger.warning("⚠️ STT failed - sending voice fallback")
-        fallback = "عذراً، ما سمعت الكلام واضح، تقدر تعيده؟ 🙏"
-        ab = generate_audio(fallback)
-        if ab: send_voice(rid, ab)
-        else: send_text_chunks(rid, fallback)
+        logger.warning("⚠️ STT failed - sending friendly voice fallback")
+        fallback_text = "عذراً، ما سمعت الكلام واضح، تقدر تعيده أو تكتبه؟ 🙏"
+        ab = generate_audio_elevenlabs(fallback_text)
+        if ab: 
+            send_voice(rid, ab)
+        else:
+            send_text_chunks(rid, fallback_text)
         send_action(rid,"typing_off")
         return
+    
     logger.info(f"🎤 Transcribed: {transcribed[:50]}")
     reply = generate_reply(transcribed) or "عذراً، ما قدرت أفهم السؤال 🙏"
-    ab = generate_audio(reply)
+    
+    # ✅ استخدام ElevenLabs للرد الصوتي
+    ab = generate_audio_elevenlabs(reply)
     time.sleep(1)
-    if ab: send_voice(rid, ab)
-    else: send_text_chunks(rid, reply)
+    if ab: 
+        send_voice(rid, ab)
+    else:
+        send_text_chunks(rid, reply)
     send_action(rid,"typing_off")
 
 # ========== الويب هوك ==========
@@ -209,46 +205,29 @@ def webhook():
             msg = ev.get('message',{})
             if not sid or not msg: continue
             if 'text' in msg:
-                logger.info(f"📝 Text from {sid}: {msg['text'][:50]}")
                 handle_text(sid, msg['text'])
             elif 'attachments' in msg:
                 for att in msg['attachments']:
                     if att.get('type')=='audio':
-                        logger.info(f"🎤 Voice from {sid}")
                         handle_voice(sid, att['payload']['url'])
                         break
     return "EVENT_RECEIVED",200
 
-# ========== نقاط الاختبار ==========
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status":"running","apis":{"groq":bool(GROQ_API_KEY),"simsimi":bool(SIMSIMI_API_KEY),"pexels":bool(PEXELS_API_KEY),"elevenlabs":bool(ELEVENLABS_API_KEY)}},200
+    return {"status":"running"},200
 
-@app.route('/test-apis', methods=['GET'])
-def test_apis():
-    results = {}
-    # Test Groq
-    if groq_client:
-        try:
-            r = groq_client.chat.completions.create(model="llama-3.3-70b-versatile",messages=[{"role":"user","content":"مرحبا"}],max_tokens=10,timeout=10)
-            results["groq"] = "✅ OK"
-        except Exception as e: results["groq"] = f"❌ {e}"
-    else: results["groq"] = "❌ No API Key"
-    # Test Simsimi
-    if SIMSIMI_API_KEY:
-        try:
-            r = requests.post("https://api.simsimi.vn/v2/simtalk",json={"text":"مرحبا","lc":"ar","key":SIMSIMI_API_KEY},timeout=10)
-            results["simsimi"] = "✅ OK" if r.status_code==200 else f"❌ HTTP {r.status_code}"
-        except Exception as e: results["simsimi"] = f"❌ {e}"
-    else: results["simsimi"] = "❌ No API Key"
-    # Test Pexels
-    if PEXELS_API_KEY:
-        try:
-            r = requests.get("https://api.pexels.com/v1/search",headers={"Authorization":PEXELS_API_KEY},params={"query":"anime","per_page":1},timeout=10)
-            results["pexels"] = "✅ OK" if r.status_code==200 else f"❌ HTTP {r.status_code}"
-        except Exception as e: results["pexels"] = f"❌ {e}"
-    else: results["pexels"] = "❌ No API Key"
-    return results, 200
+@app.route('/test-stt', methods=['GET'])
+def test_stt():
+    """اختبار Whisper STT"""
+    if not OPENAI_API_KEY:
+        return {"error": "OPENAI_API_KEY not set"}, 400
+    try:
+        # اختبار بسيط
+        res = requests.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=10)
+        return {"status": "✅ Whisper API reachable", "http": res.status_code}, 200
+    except Exception as e:
+        return {"status": "❌ Error", "error": str(e)}, 500
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT',5000))
