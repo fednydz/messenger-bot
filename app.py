@@ -13,7 +13,6 @@ VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
-PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -23,9 +22,11 @@ POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة،
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
 BOT_IDENTITY_REPLY = "لا أنا لست بوت، أنا Mounir صاحب الصفحة التي تنشر حلقات المحقق كونان، وأعتذر لعدم نشر الحلقات كاملة."
 
-FALLBACK_IMAGES = [
+# 🖼️ قائمة ثابتة للصور (بدون API خارجي)
+CONAN_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/6/6e/Detective_Conan_logo.png",
     "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
+    # أضف هنا أي روابط صور مباشرة (.jpg/.png/.webp)
 ]
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -51,18 +52,6 @@ def get_groq_response(text):
     except Exception as e:
         logger.error(f"❌ Groq Error: {e}")
         return None
-
-def get_random_pexels_image():
-    if not PEXELS_API_KEY: return random.choice(FALLBACK_IMAGES)
-    try:
-        res = requests.get("https://api.pexels.com/v1/search",
-            headers={"Authorization":PEXELS_API_KEY},
-            params={"query":"Detective Conan anime","per_page":15,"orientation":"landscape"}, timeout=10)
-        if res.status_code == 200:
-            photos = [p['src']['medium'] for p in res.json().get('photos',[])]
-            return random.choice(photos) if photos else random.choice(FALLBACK_IMAGES)
-        return random.choice(FALLBACK_IMAGES)
-    except: return random.choice(FALLBACK_IMAGES)
 
 def transcribe_audio_whisper(audio_url):
     if not OPENAI_API_KEY:
@@ -130,10 +119,13 @@ def generate_reply(text):
 
 def handle_text(rid, txt):
     if is_image_request(txt):
-        send_action(rid,"typing_on"); time.sleep(1.5)
-        send_image(rid, get_random_pexels_image())
+        send_action(rid,"typing_on")
+        time.sleep(1.5)
+        # إرسال صورة عشوائية من القائمة الثابتة
+        send_image(rid, random.choice(CONAN_IMAGES))
         send_action(rid,"typing_off")
         return
+    
     reply = generate_reply(txt)
     if reply:
         send_text_chunks(rid, reply)
