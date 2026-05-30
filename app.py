@@ -1,4 +1,6 @@
 import os
+import io
+import json
 import time
 import random
 import requests
@@ -16,6 +18,8 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
 SIMSIMI_API_KEY = os.getenv('SIMSIMI_API_KEY')
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
+ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
 
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
@@ -30,26 +34,50 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ========== Simsimi API ==========
 def get_simsimi_response(user_message, sender_id):
-    """الحصول على رد من Simsimi API"""
     try:
         url = "https://api.simsimi.vn/v2/simtalk"
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = {
-            "text": user_message,
-            "lc": "ar",  # اللغة العربية
-            "key": SIMSIMI_API_KEY
-        }
-        
-        response = requests.post(url, json=data, headers=headers, timeout=10)
+        data = {"text": user_message, "lc": "ar", "key": SIMSIMI_API_KEY}
+        response = requests.post(url, json=data, headers={"Content-Type": "application/json"}, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            return data.get('message', '')
+            return response.json().get('message', '')
         return None
     except Exception as e:
         print(f"Simsimi Error: {e}")
         return None
+
+# ========== ElevenLabs Text-to-Speech ==========
+def generate_audio(text):
+    if not ELEVENLABS_API_KEY:
+        return None
+    try:
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+        headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"}
+        data = {
+            "text": text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+        }
+        response = requests.post(url, json=data, headers=headers, timeout=15)
+        return response.content if response.status_code == 200 else None
+    except Exception as e:
+        print(f"ElevenLabs Error: {e}")
+        return None
+
+def send_voice_message(recipient_id, audio_bytes):
+    try:
+        url = f"https://graph.facebook.com/v20.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+        payload = {
+            "recipient": json.dumps({"id": recipient_id}),
+            "message": json.dumps({
+                "attachment": {"type": "audio", "payload": {"is_reusable": True}}
+            })
+        }
+        files = {"filedata": ("voice.mp3", io.BytesIO(audio_bytes), "audio/mpeg")}
+        response = requests.post(url, data=payload, files=files)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"FB Audio Upload Error: {e}")
+        return False
 
 # ========== جلب الصور من Pexels ==========
 def get_random_pexels_image():
@@ -58,8 +86,7 @@ def get_random_pexels_image():
         params = {"query": "Detective Conan anime", "per_page": "15", "orientation": "landscape"}
         response = requests.get("https://api.pexels.com/v1/search", headers=headers, params=params, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            photos = [p['src']['medium'] for p in data.get('photos', [])]
+            photos = [p['src']['medium'] for p in response.json().get('photos', [])]
             return random.choice(photos) if photos else random.choice(FALLBACK_IMAGES)
         return random.choice(FALLBACK_IMAGES)
     except Exception as e:
@@ -83,30 +110,24 @@ def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.0, typing_per_
     total_typing_time = min(len(full_text) * typing_per_char, 5)
     send_messenger_action(recipient_id, "typing_on")
     time.sleep(total_typing_time)
-    
     chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
     if not chunks: chunks = [full_text]
-    
     for i, chunk in enumerate(chunks):
         requests.post("https://graph.facebook.com/v20.0/me/messages", json={
-            "recipient": {"id": recipient_id},
-            "message": {"text": chunk},
-            "access_token": PAGE_ACCESS_TOKEN
+            "recipient": {"id": recipient_id}, "message": {"text": chunk}, "access_token": PAGE_ACCESS_TOKEN
         })
         if i < len(chunks) - 1: time.sleep(chunk_delay)
-    
     send_messenger_action(recipient_id, "typing_off")
 
 # ========== كشف الطلبات ==========
 def is_explicit_image_request(text):
-    text = text.lower()
-    keywords = ['صورة', 'صور', 'صوره', 'صورة كونان', 'اريد صورة', 'ابغي صورة', 'send image', 'picture', 'photo', 'صورة حلقة']
-    return any(k in text for k in keywords)
+    return any(k in text.lower() for k in ['صورة', 'صور', 'صوره', 'صورة كونان', 'اريد صورة', 'abغي صورة', 'send image', 'picture', 'photo'])
+
+def is_voice_request(text):
+    return any(k in text.lower() for k in ['صوت', 'رسالة صوتية', 'تحدث', 'ارسل صوت', 'تكلم', 'voice', 'audio', 'بصوتك'])
 
 def is_conan_related(text):
-    text = text.lower()
-    keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'رابط', 'شاهد', 'episode', 'conan']
-    return any(k in text for k in keywords)
+    return any(k in text.lower() for k in ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'رابط', 'شاهد', 'episode', 'conan'])
 
 # ========== الذكاء الاصطناعي (Groq) ==========
 def get_ai_response(user_message, sender_id):
@@ -119,18 +140,12 @@ def get_ai_response(user_message, sender_id):
 5- إذا سأل عن سياسة النشر، وضّح بلطف: "{POLICY_NOTE}"
 6- شجّع على متابعة الصفحة "{PAGE_URL}" مرة واحدة فقط إذا كان الحديث طويلاً أو وداعاً.
 7- إذا خرج المستخدم عن الموضوع، أعد توجيهه بلطف لكونان دون أن يشعر.
-8- اجعل المحادثة مستمرة بطرح سؤال بسيط أو مشاركة رأي شخصي أحياناً.
 هدفك: محادثة إنسانية طبيعية 100%، كل مستخدم له حوار مستقل."""
-
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.85,
-            max_tokens=400
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
+            temperature=0.85, max_tokens=400
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -140,11 +155,8 @@ def get_ai_response(user_message, sender_id):
 # ========== الويب هوك ==========
 @app.route('/webhook', methods=['GET'])
 def verify_webhook():
-    mode = request.args.get('hub.mode')
-    token = request.args.get('hub.verify_token')
-    challenge = request.args.get('hub.challenge')
-    if mode == 'subscribe' and token == VERIFY_TOKEN:
-        return challenge, 200
+    if request.args.get('hub.mode') == 'subscribe' and request.args.get('hub.verify_token') == VERIFY_TOKEN:
+        return request.args.get('hub.challenge'), 200
     abort(403)
 
 @app.route('/webhook', methods=['POST'])
@@ -155,11 +167,10 @@ def handle_webhook():
             for messaging_event in entry.get('messaging', []):
                 sender_id = messaging_event.get('sender', {}).get('id')
                 message = messaging_event.get('message', {})
-                
                 if message and 'text' in message:
                     user_text = message['text']
 
-                    # 1️⃣ طلب صورة صريح -> إرسال صورة مباشرة
+                    # 1️⃣ طلب صورة صريح
                     if is_explicit_image_request(user_text):
                         img_url = get_random_pexels_image()
                         send_messenger_action(sender_id, "typing_on")
@@ -167,41 +178,34 @@ def handle_webhook():
                         send_image_attachment(sender_id, img_url)
                         send_messenger_action(sender_id, "typing_off")
 
-                    # 2️⃣ مواضيع متعلقة بكونان -> Groq AI (متخصص)
-                    elif is_conan_related(user_text):
-                        ai_reply = get_ai_response(user_text, sender_id)
-                        if ai_reply:
-                            send_message_in_chunks(sender_id, ai_reply)
+                    # 2️⃣ طلب صوت صريح -> تحويل الرد لنص ثم لصوت
+                    elif is_voice_request(user_text):
+                        # توليد النص أولاً
+                        reply = (get_ai_response(user_text, sender_id) if is_conan_related(user_text) else get_simsimi_response(user_text, sender_id))
+                        reply = reply or "عذراً، ما قدرت أفهم السؤال 🙏"
+                        
+                        send_messenger_action(sender_id, "typing_on")
+                        time.sleep(1)
+                        audio = generate_audio(reply)
+                        if audio:
+                            send_voice_message(sender_id, audio)
                         else:
-                            # Fallback to Simsimi if Groq fails
-                            simsimi_reply = get_simsimi_response(user_text, sender_id)
-                            if simsimi_reply:
-                                send_message_in_chunks(sender_id, simsimi_reply)
+                            # Fallback للنص إذا فشل الصوت
+                            send_message_in_chunks(sender_id, reply)
+                        send_messenger_action(sender_id, "typing_off")
 
-                    # 3️⃣ محادثات عامة -> Simsimi (طبيعي وسريع)
+                    # 3️⃣ محادثة عادية -> نص فقط
                     else:
-                        simsimi_reply = get_simsimi_response(user_text, sender_id)
-                        if simsimi_reply:
-                            send_message_in_chunks(sender_id, simsimi_reply)
-                        else:
-                            # Fallback to Groq if Simsimi fails
-                            ai_reply = get_ai_response(user_text, sender_id)
-                            if ai_reply:
-                                send_message_in_chunks(sender_id, ai_reply)
+                        reply = (get_ai_response(user_text, sender_id) if is_conan_related(user_text) else get_simsimi_response(user_text, sender_id))
+                        if reply:
+                            send_message_in_chunks(sender_id, reply)
 
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "running", "apis": ["Simsimi", "Groq", "Pexels"]}, 200
-
-@app.route('/test-simsimi', methods=['GET'])
-def test_simsimi():
-    """اختبار Simsimi API"""
-    test_msg = "مرحبا"
-    reply = get_simsimi_response(test_msg, "test_user")
-    return {"status": "success", "test_message": test_msg, "reply": reply}, 200
+    return {"status": "running", "features": ["Simsimi", "Groq", "Pexels", "ElevenLabs"]}, 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
