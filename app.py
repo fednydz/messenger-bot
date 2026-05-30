@@ -60,7 +60,30 @@ def generate_audio(text):
         response = requests.post(url, json=data, headers=headers, timeout=15)
         return response.content if response.status_code == 200 else None
     except Exception as e:
-        print(f"ElevenLabs Error: {e}")
+        print(f"ElevenLabs TTS Error: {e}")
+        return None
+
+# ========== ElevenLabs Speech-to-Text ==========
+def transcribe_audio(audio_url):
+    if not ELEVENLABS_API_KEY:
+        return None
+    try:
+        # تحميل الصوت من URL
+        audio_response = requests.get(audio_url, timeout=10)
+        if audio_response.status_code != 200:
+            return None
+        
+        # إرسال لـ ElevenLabs للتعرف على الكلام
+        url = "https://api.elevenlabs.io/v1/speech-to-text"
+        headers = {"xi-api-key": ELEVENLABS_API_KEY}
+        files = {"file": ("audio.mp3", io.BytesIO(audio_response.content), "audio/mpeg")}
+        
+        response = requests.post(url, headers=headers, files=files, timeout=30)
+        if response.status_code == 200:
+            return response.json().get('text', '')
+        return None
+    except Exception as e:
+        print(f"ElevenLabs STT Error: {e}")
         return None
 
 def send_voice_message(recipient_id, audio_bytes):
@@ -152,6 +175,28 @@ def get_ai_response(user_message, sender_id):
         print(f"Groq Error: {e}")
         return None
 
+# ========== معالجة الرد الصوتي ==========
+def handle_voice_response(user_text, sender_id):
+    """توليد رد نصي ثم تحويله لصوت"""
+    # تحديد مصدر الرد
+    if is_conan_related(user_text):
+        reply = get_ai_response(user_text, sender_id)
+    else:
+        reply = get_simsimi_response(user_text, sender_id)
+    
+    reply = reply or "عذراً، ما قدرت أفهم السؤال 🙏"
+    
+    # تحويل النص لصوت
+    send_messenger_action(sender_id, "typing_on")
+    time.sleep(1)
+    audio = generate_audio(reply)
+    if audio:
+        send_voice_message(sender_id, audio)
+    else:
+        # Fallback للنص إذا فشل الصوت
+        send_message_in_chunks(sender_id, reply)
+    send_messenger_action(sender_id, "typing_off")
+
 # ========== الويب هوك ==========
 @app.route('/webhook', methods=['GET'])
 def verify_webhook():
@@ -167,10 +212,12 @@ def handle_webhook():
             for messaging_event in entry.get('messaging', []):
                 sender_id = messaging_event.get('sender', {}).get('id')
                 message = messaging_event.get('message', {})
+                
+                # 1️⃣ رسالة نصية
                 if message and 'text' in message:
                     user_text = message['text']
 
-                    # 1️⃣ طلب صورة صريح
+                    # طلب صورة
                     if is_explicit_image_request(user_text):
                         img_url = get_random_pexels_image()
                         send_messenger_action(sender_id, "typing_on")
@@ -178,34 +225,47 @@ def handle_webhook():
                         send_image_attachment(sender_id, img_url)
                         send_messenger_action(sender_id, "typing_off")
 
-                    # 2️⃣ طلب صوت صريح -> تحويل الرد لنص ثم لصوت
+                    # طلب صوت
                     elif is_voice_request(user_text):
-                        # توليد النص أولاً
-                        reply = (get_ai_response(user_text, sender_id) if is_conan_related(user_text) else get_simsimi_response(user_text, sender_id))
-                        reply = reply or "عذراً، ما قدرت أفهم السؤال 🙏"
-                        
-                        send_messenger_action(sender_id, "typing_on")
-                        time.sleep(1)
-                        audio = generate_audio(reply)
-                        if audio:
-                            send_voice_message(sender_id, audio)
-                        else:
-                            # Fallback للنص إذا فشل الصوت
-                            send_message_in_chunks(sender_id, reply)
-                        send_messenger_action(sender_id, "typing_off")
+                        handle_voice_response(user_text, sender_id)
 
-                    # 3️⃣ محادثة عادية -> نص فقط
+                    # محادثة عادية
                     else:
-                        reply = (get_ai_response(user_text, sender_id) if is_conan_related(user_text) else get_simsimi_response(user_text, sender_id))
+                        reply = (get_ai_response(user_text, sender_id) if is_conan_related(user_text) 
+                                 else get_simsimi_response(user_text, sender_id))
                         if reply:
                             send_message_in_chunks(sender_id, reply)
+
+                # 2️⃣ رسالة صوتية -> رد صوتي تلقائي
+                elif message and 'attachments' in message:
+                    for attachment in message['attachments']:
+                        if attachment.get('type') == 'audio':
+                            audio_url = attachment.get('payload', {}).get('url')
+                            if audio_url:
+                                # تحويل الصوت لنص
+                                send_messenger_action(sender_id, "typing_on")
+                                transcribed_text = transcribe_audio(audio_url)
+                                
+                                if transcribed_text:
+                                    print(f"🎤 Audio transcribed: {transcribed_text}")
+                                    # الرد صوتياً على الرسالة الصوتية
+                                    handle_voice_response(transcribed_text, sender_id)
+                                else:
+                                    # إذا فشل التعرف، رد بصوت عام
+                                    fallback_reply = "سمعت رسالتك الصوتية بس ما قدرت أفهمها تماماً، تقدر تعيد إرسالها كنص؟ 🙏"
+                                    audio = generate_audio(fallback_reply)
+                                    if audio:
+                                        send_voice_message(sender_id, audio)
+                                    else:
+                                        send_message_in_chunks(sender_id, fallback_reply)
+                                send_messenger_action(sender_id, "typing_off")
 
         return "EVENT_RECEIVED", 200
     return "OK", 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "running", "features": ["Simsimi", "Groq", "Pexels", "ElevenLabs"]}, 200
+    return {"status": "running", "features": ["Simsimi", "Groq", "Pexels", "ElevenLabs (TTS+STT)"]}, 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
