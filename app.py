@@ -14,10 +14,9 @@ PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
 PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
-SIMSIMI_API_KEY = os.getenv('SIMSIMI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')  # ✅ لـ Whisper STT
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
@@ -53,17 +52,6 @@ def get_groq_response(text):
         logger.error(f"❌ Groq Error: {e}")
         return None
 
-def get_simsimi_response(text):
-    if not SIMSIMI_API_KEY: return None
-    try:
-        res = requests.post("https://api.simsimi.vn/v2/simtalk",
-            json={"text":text,"lc":"ar","key":SIMSIMI_API_KEY},
-            headers={"Content-Type":"application/json"}, timeout=10)
-        return res.json().get('message','') if res.status_code == 200 else None
-    except Exception as e:
-        logger.error(f"❌ Simsimi Error: {e}")
-        return None
-
 def get_random_pexels_image():
     if not PEXELS_API_KEY: return random.choice(FALLBACK_IMAGES)
     try:
@@ -76,15 +64,12 @@ def get_random_pexels_image():
         return random.choice(FALLBACK_IMAGES)
     except: return random.choice(FALLBACK_IMAGES)
 
-# ✅ Whisper STT (بديل موثوق لـ ElevenLabs STT)
 def transcribe_audio_whisper(audio_url):
     if not OPENAI_API_KEY:
         logger.warning("⚠️ OPENAI_API_KEY not set - skipping STT")
         return None
     try:
-        # تحميل الصوت من فيسبوك
         audio_data = requests.get(audio_url, timeout=15).content
-        # إرسال لـ Whisper
         files = {"file": ("audio.mp3", io.BytesIO(audio_data), "audio/mpeg")}
         data = {"model": "whisper-1"}
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
@@ -141,11 +126,7 @@ def send_voice(rid, abytes):
 def generate_reply(text):
     if is_bot_question(text):
         return BOT_IDENTITY_REPLY
-    reply = get_groq_response(text)
-    if reply: return reply
-    reply = get_simsimi_response(text)
-    if reply: return reply
-    return None
+    return get_groq_response(text)
 
 def handle_text(rid, txt):
     if is_image_request(txt):
@@ -162,7 +143,6 @@ def handle_text(rid, txt):
 
 def handle_voice(rid, aurl):
     send_action(rid,"typing_on")
-    # ✅ استخدام Whisper للاستماع
     transcribed = transcribe_audio_whisper(aurl)
     
     if not transcribed:
@@ -179,7 +159,6 @@ def handle_voice(rid, aurl):
     logger.info(f"🎤 Transcribed: {transcribed[:50]}")
     reply = generate_reply(transcribed) or "عذراً، ما قدرت أفهم السؤال 🙏"
     
-    # ✅ استخدام ElevenLabs للرد الصوتي
     ab = generate_audio_elevenlabs(reply)
     time.sleep(1)
     if ab: 
@@ -216,18 +195,6 @@ def webhook():
 @app.route('/health', methods=['GET'])
 def health():
     return {"status":"running"},200
-
-@app.route('/test-stt', methods=['GET'])
-def test_stt():
-    """اختبار Whisper STT"""
-    if not OPENAI_API_KEY:
-        return {"error": "OPENAI_API_KEY not set"}, 400
-    try:
-        # اختبار بسيط
-        res = requests.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=10)
-        return {"status": "✅ Whisper API reachable", "http": res.status_code}, 200
-    except Exception as e:
-        return {"status": "❌ Error", "error": str(e)}, 500
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT',5000))
