@@ -1,9 +1,10 @@
-import os, io, json, time, random, requests, logging, hmac, hashlib, atexit, threading
+import os, json, time, random, requests, logging, hmac, hashlib, atexit
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, request, abort
 from dotenv import load_dotenv
+from groq import Groq
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -14,29 +15,16 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET', '').strip()
-ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
-ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY', '').strip()
 
-# 🔑 مفاتيح Claude (مفصولة بفاصلة)
-RAW_CLAUDE_KEYS = os.getenv('CLAUDE_API_KEYS', '')
-CLAUDE_API_KEYS = [k.strip() for k in RAW_CLAUDE_KEYS.split(',') if k.strip()]
-
-# 🔄 توزيع ذكي للمفاتيح (Thread-Safe Round-Robin)
-claude_key_index = 0
-claude_lock = threading.Lock()
-def get_next_claude_key():
-    global claude_key_index
-    with claude_lock:
-        if not CLAUDE_API_KEYS: return None
-        key = CLAUDE_API_KEYS[claude_key_index % len(CLAUDE_API_KEYS)]
-        claude_key_index += 1
-        return key
+# تهيئة Groq
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
 
-# 🖼️ مكتبة صور متنوعة
+# 🖼️ مكتبة صور متنوعة (15+ صورة مباشرة)
 CONAN_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/6/6e/Detective_Conan_logo.png",
     "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
@@ -55,11 +43,11 @@ CONAN_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/thumb/d/d0/Case_Closed_vol_95.jpg/440px-Case_Closed_vol_95.jpg",
 ]
 
-# 🔄 ThreadPoolExecutor
+# 🔄 ThreadPoolExecutor للمعالجة غير المتزامنة
 executor = ThreadPoolExecutor(max_workers=15)
 FB_API_URL = "https://graph.facebook.com/v20.0/me/messages"
 
-# ========== Retry Session ==========
+# ========== إعداد Session مع Retry ذكي ==========
 def create_retry_session(retries=3, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504)):
     session = requests.Session()
     retry = Retry(total=retries, read=retries, connect=retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist, allowed_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
@@ -68,24 +56,16 @@ def create_retry_session(retries=3, backoff_factor=1.0, status_forcelist=(429, 5
     session.mount("http://", adapter)
     return session
 
-anthropic_session = create_retry_session()
-elevenlabs_session = create_retry_session()
 generic_session = create_retry_session()
 
 # ========== دوال الكشف ==========
 def is_image_request(t): return any(k in t.lower() for k in ['صورة','صور','صوره','اريد صورة','picture','photo'])
 
-# ========== Claude API ==========
-def get_claude_response(text):
-    api_key = get_next_claude_key()
-    if not api_key: return None
+# ========== Groq API ==========
+def get_groq_response(text):
+    if not groq_client: return None
     try:
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-        system_prompt = f"""أنت مساعد رسمي ودود لصفحة المحقق كونان التي يديرها Mounir.
+        sys_prompt = f"""أنت مساعد رسمي ودود لصفحة المحقق كونان التي يديرها Mounir.
 مهمتك:
 1- الرد على المستخدمين بلهجة عربية طبيعية، مختصرة، وودية.
 2- إذا سُئلت عن هويتك: قل إنك مساعد ذكي لصفحة Mounir، صُممت لمساعدة المعجبين بكونان.
@@ -96,61 +76,19 @@ def get_claude_response(text):
 7- إذا خرج المستخدم عن الموضوع، أعد توجيهه بلطف لكونان.
 هدفك: تجربة مستخدم سلسة، مفيدة، وإنسانية."""
 
-        payload = {
-            "model": "claude-3-5-sonnet-20241022",
-            "max_tokens": 1024,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": text}]
-        }
-        res = anthropic_session.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=25)
-        if res.status_code == 200:
-            return res.json()['content'][0]['text']
-        return None
-    except Exception as e:
-        logger.error(f"❌ Claude API Error: {e}")
-        return None
-
-# ========== ElevenLabs Speech-to-Text (بديل Whisper) ==========
-def transcribe_audio_elevenlabs(audio_url):
-    if not ELEVENLABS_API_KEY: return None
-    try:
-        # تحميل الصوت أولاً
-        audio_res = generic_session.get(audio_url, timeout=20)
-        if audio_res.status_code != 200: return None
-        audio_data = audio_res.content
-        
-        # إرسال لـ ElevenLabs STT
-        res = elevenlabs_session.post(
-            "https://api.elevenlabs.io/v1/speech-to-text",
-            headers={"xi-api-key": ELEVENLABS_API_KEY},
-            files={"file": ("audio.mp3", io.BytesIO(audio_data), "audio/mpeg")},
-            timeout=30
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}],
+            temperature=0.8,
+            max_tokens=512,
+            timeout=20
         )
-        if res.status_code == 200:
-            text = res.json().get('text', '').strip()
-            logger.info(f"✅ ElevenLabs STT: {text[:60]}")
-            return text if text else None
-        return None
+        return completion.choices[0].message.content
     except Exception as e:
-        logger.error(f"❌ ElevenLabs STT Error: {e}")
+        logger.error(f"❌ Groq Error: {e}")
         return None
 
-# ========== ElevenLabs Text-to-Speech ==========
-def generate_audio_elevenlabs(text):
-    if not ELEVENLABS_API_KEY: return None
-    try:
-        res = elevenlabs_session.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
-            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-            json={"text": text, "model_id": "eleven_multilingual_v2", "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
-            timeout=25
-        )
-        return res.content if res.status_code == 200 else None
-    except Exception as e:
-        logger.error(f"❌ ElevenLabs TTS Error: {e}")
-        return None
-
-# ========== إرسال الرسائل ==========
+# ========== إرسال الرسائل (✅ access_token كـ Query Param) ==========
 def send_action(rid, act):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     data = {"recipient": {"id": rid}, "sender_action": act}
@@ -165,12 +103,6 @@ def send_image_attachment(rid, url):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     data = {"recipient": {"id": rid}, "message": {"attachment": {"type": "image", "payload": {"url": url, "is_reusable": True}}}}
     return generic_session.post(FB_API_URL, params=params, json=data, timeout=10).status_code == 200
-
-def send_voice_attachment(rid, audio_bytes):
-    url = f"{FB_API_URL}?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {"recipient": json.dumps({"id": rid}), "message": json.dumps({"attachment": {"type": "audio", "payload": {"is_reusable": True}}})}
-    files = {"filedata": ("reply.mp3", io.BytesIO(audio_bytes), "audio/mpeg")}
-    return generic_session.post(url, data=payload, files=files, timeout=15).status_code == 200
 
 def send_text_chunks(rid, txt, delay=1.0, pchar=0.04):
     send_action(rid, "typing_on")
@@ -188,7 +120,7 @@ def handle_text(rid, txt):
         send_image_attachment(rid, random.choice(CONAN_IMAGES))
         send_action(rid, "typing_off")
         return
-    reply = get_claude_response(txt)
+    reply = get_groq_response(txt)
     if reply:
         send_text_chunks(rid, reply)
     else:
@@ -196,22 +128,12 @@ def handle_text(rid, txt):
         send_text_chunks(rid, fallback)
 
 def handle_voice(rid, aurl):
+    """استقبال الرسائل الصوتية والرد برسالة نصية مهذبة"""
+    logger.info(f"🎤 Voice message received from {rid}")
     send_action(rid, "typing_on")
-    transcribed = transcribe_audio_elevenlabs(aurl)
-    if not transcribed:
-        fallback_text = "عذراً، ما سمعت الكلام واضح، تقدر تعيده أو تكتبه؟ 🙏"
-        ab = generate_audio_elevenlabs(fallback_text)
-        if ab: send_voice_attachment(rid, ab)
-        else: send_text_chunks(rid, fallback_text)
-        send_action(rid, "typing_off")
-        return
-    logger.info(f"🎤 Transcribed: {transcribed[:50]}")
-    reply = get_claude_response(transcribed) or "عذراً، ما قدرت أفهم السؤال 🙏"
-    ab = generate_audio_elevenlabs(reply)
     time.sleep(1)
-    if ab: send_voice_attachment(rid, ab)
-    else: send_text_chunks(rid, reply)
-    send_action(rid, "typing_off")
+    reply = "عذراً، حالياً أدعم الرسائل النصية والصور فقط 📝🖼️\nتقدر تكتب لي رسالتك وسأرد عليك فوراً! 😊"
+    send_text_chunks(rid, reply)
 
 # ========== المعالج الخلفي ==========
 def process_message_background(sender_id, msg_data):
@@ -226,7 +148,7 @@ def process_message_background(sender_id, msg_data):
     except Exception as e:
         logger.error(f"❌ Background task failed for user {sender_id}: {e}")
 
-# ========== الويب هوك (آمن) ==========
+# ========== الويب هوك (آمن + Async) ==========
 @app.route('/webhook', methods=['GET'])
 def verify():
     if request.args.get('hub.mode') == 'subscribe' and request.args.get('hub.verify_token') == VERIFY_TOKEN:
@@ -263,11 +185,12 @@ def webhook():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status":"running", "workers": executor._max_workers, "claude_keys": len(CLAUDE_API_KEYS), "images": len(CONAN_IMAGES)}, 200
+    return {"status":"running", "workers": executor._max_workers, "groq_available": bool(groq_client), "images": len(CONAN_IMAGES)}, 200
 
+# إيقاف نظيف للمؤشرات
 atexit.register(executor.shutdown, wait=False)
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    logger.info(f"🚀 Starting Claude + ElevenLabs async bot on port {port}")
+    logger.info(f"🚀 Starting Groq-powered async bot on port {port}")
     app.run(host='0.0.0.0', port=port)
