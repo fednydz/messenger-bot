@@ -1,260 +1,208 @@
-import os, io, json, time, random, requests, logging, hmac, hashlib, atexit
-from concurrent.futures import ThreadPoolExecutor
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import os
+import time
+import random
+import requests
 from flask import Flask, request, abort
+from groq import Groq
 from dotenv import load_dotenv
 
-# إعداد السجلات
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 load_dotenv()
 app = Flask(__name__)
 
 # ========== المتغيرات البيئية ==========
 VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
-APP_SECRET = os.getenv('FACEBOOK_APP_SECRET', '').strip()  # ✅ إزالة المسافات تلقائياً
-ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
-ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+APP_SECRET = os.getenv('FACEBOOK_APP_SECRET')
+PEXELS_API_KEY = os.getenv('PEXELS_API_KEY')
+SIMSIMI_API_KEY = os.getenv('SIMSIMI_API_KEY')
 
 CONAN_LINK = "https://exe.io/vLPHW2I"
 POLICY_NOTE = "⚠️ ملاحظة: نحن لا ننشر حلقات كاملة، بل أجزاء مُقسَّمة من حلقات المحقق كونان فقط."
 PAGE_URL = "https://www.facebook.com/mounirdjouid"
 
-# 🖼️ مكتبة صور متنوعة (15+ صورة مباشرة وقانونية)
-CONAN_IMAGES = [
+FALLBACK_IMAGES = [
     "https://upload.wikimedia.org/wikipedia/en/6/6e/Detective_Conan_logo.png",
     "https://upload.wikimedia.org/wikipedia/en/thumb/2/23/Conan_Edogawa_profile.jpg/440px-Conan_Edogawa_profile.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/8/8d/Case_Closed_volume_1_cover.jpg/440px-Case_Closed_volume_1_cover.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/4/4c/Detective_Conan_The_Movie.png/440px-Detective_Conan_The_Movie.png",
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Detective_Conan_anime_logo.svg/1200px-Detective_Conan_anime_logo.svg.png",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/5/5a/Case_Closed_vol_1.jpg/440px-Case_Closed_vol_1.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/2/24/Detective_Conan_manga_volume_1.jpg/440px-Detective_Conan_manga_volume_1.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/9/9f/Case_Closed_vol_76.jpg/440px-Case_Closed_vol_76.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/7/72/Case_Closed_vol_90.jpg/440px-Case_Closed_vol_90.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/0/0e/Case_Closed_vol_100.jpg/440px-Case_Closed_vol_100.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/3/3e/Case_Closed_vol_50.jpg/440px-Case_Closed_vol_50.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/1/1a/Case_Closed_vol_25.jpg/440px-Case_Closed_vol_25.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/6/6c/Case_Closed_vol_70.jpg/440px-Case_Closed_vol_70.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/a/a9/Case_Closed_vol_85.jpg/440px-Case_Closed_vol_85.jpg",
-    "https://upload.wikimedia.org/wikipedia/en/thumb/d/d0/Case_Closed_vol_95.jpg/440px-Case_Closed_vol_95.jpg",
 ]
 
-# 🔄 ThreadPoolExecutor للمعالجة غير المتزامنة
-executor = ThreadPoolExecutor(max_workers=15)
-FB_API_URL = "https://graph.facebook.com/v20.0/me/messages"
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ========== إعداد Session مع Retry ذكي ==========
-def create_retry_session(retries=3, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504)):
-    session = requests.Session()
-    retry = Retry(total=retries, read=retries, connect=retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist, allowed_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-openai_session = create_retry_session()
-elevenlabs_session = create_retry_session()
-generic_session = create_retry_session()
-
-# ========== دوال الكشف ==========
-def is_bot_question(t): return any(k in t.lower() for k in ['بوت','روبوت','ذكاء اصطناعي','ai','assistant','مساعد'])
-def is_image_request(t): return any(k in t.lower() for k in ['صورة','صور','صوره','اريد صورة','picture','photo'])
-
-# ========== OpenAI Chat API ==========
-def get_openai_response(text):
-    if not OPENAI_API_KEY: return None
+# ========== Simsimi API ==========
+def get_simsimi_response(user_message, sender_id):
+    """الحصول على رد من Simsimi API"""
     try:
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": f"""أنت مساعد رسمي ودود لصفحة المحقق كونان التي يديرها Mounir.
-مهمتك:
-1- الرد على المستخدمين بلهجة عربية طبيعية، مختصرة، وودية.
-2- إذا سُئلت عن هويتك: قل إنك مساعد ذكي لصفحة Mounir، صُممت لمساعدة المعجبين بكونان.
-3- إذا طُلب رابط المشاهدة: أرسل: {CONAN_LINK}
-4- إذا سُئلت عن سياسة النشر: وضّح بلطف: {POLICY_NOTE}
-5- شجّع على متابعة الصفحة: {PAGE_URL} بشكل طبيعي غير متكرر.
-6- استخدم إيموجيز خفيفة 🎬🔍✨ لجعل المحادثة ممتعة.
-7- إذا خرج المستخدم عن الموضوع، أعد توجيهه بلطف لكونان.
-هدفك: تجربة مستخدم سلسة، مفيدة، وإنسانية."""},
-                {"role": "user", "content": text}
-            ],
-            "temperature": 0.8, "max_tokens": 300
+        url = "https://api.simsimi.vn/v2/simtalk"
+        headers = {
+            "Content-Type": "application/json"
         }
-        res = openai_session.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=25)
-        return res.json()['choices'][0]['message']['content'] if res.status_code == 200 else None
-    except Exception as e:
-        logger.error(f"❌ OpenAI Chat Error: {e}")
-        return None
-
-# ========== ✅ Whisper gpt-4o-transcribe ==========
-def transcribe_audio_whisper(audio_url):
-    if not OPENAI_API_KEY: return None
-    try:
-        audio_res = generic_session.get(audio_url, timeout=20)
-        if audio_res.status_code != 200: return None
-        audio_data = audio_res.content
+        data = {
+            "text": user_message,
+            "lc": "ar",  # اللغة العربية
+            "key": SIMSIMI_API_KEY
+        }
         
-        files = {"file": ("audio.mp3", io.BytesIO(audio_data), "audio/mpeg")}
-        data = {"model": "gpt-4o-transcribe"}
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-        res = openai_session.post("https://api.openai.com/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=35)
-        if res.status_code == 200:
-            text = res.json().get('text', '').strip()
-            logger.info(f"✅ Transcribed: {text[:60]}")
-            return text if text else None
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('message', '')
         return None
     except Exception as e:
-        logger.error(f"❌ Whisper Error: {e}")
+        print(f"Simsimi Error: {e}")
         return None
 
-# ========== ElevenLabs TTS ==========
-def generate_audio_elevenlabs(text):
-    if not ELEVENLABS_API_KEY: return None
+# ========== جلب الصور من Pexels ==========
+def get_random_pexels_image():
     try:
-        res = elevenlabs_session.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
-            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-            json={"text": text, "model_id": "eleven_multilingual_v2", "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
-            timeout=25
+        headers = {"Authorization": PEXELS_API_KEY}
+        params = {"query": "Detective Conan anime", "per_page": "15", "orientation": "landscape"}
+        response = requests.get("https://api.pexels.com/v1/search", headers=headers, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            photos = [p['src']['medium'] for p in data.get('photos', [])]
+            return random.choice(photos) if photos else random.choice(FALLBACK_IMAGES)
+        return random.choice(FALLBACK_IMAGES)
+    except Exception as e:
+        print(f"Pexels Error: {e}")
+        return random.choice(FALLBACK_IMAGES)
+
+# ========== إرسال الرسائل ==========
+def send_messenger_action(recipient_id, action):
+    params = {"recipient": {"id": recipient_id}, "sender_action": action, "access_token": PAGE_ACCESS_TOKEN}
+    requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
+
+def send_image_attachment(recipient_id, image_url):
+    params = {
+        "recipient": {"id": recipient_id},
+        "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}},
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    requests.post("https://graph.facebook.com/v20.0/me/messages", json=params)
+
+def send_message_in_chunks(recipient_id, full_text, chunk_delay=1.0, typing_per_char=0.04):
+    total_typing_time = min(len(full_text) * typing_per_char, 5)
+    send_messenger_action(recipient_id, "typing_on")
+    time.sleep(total_typing_time)
+    
+    chunks = [c.strip() for c in full_text.split('\n\n') if c.strip()]
+    if not chunks: chunks = [full_text]
+    
+    for i, chunk in enumerate(chunks):
+        requests.post("https://graph.facebook.com/v20.0/me/messages", json={
+            "recipient": {"id": recipient_id},
+            "message": {"text": chunk},
+            "access_token": PAGE_ACCESS_TOKEN
+        })
+        if i < len(chunks) - 1: time.sleep(chunk_delay)
+    
+    send_messenger_action(recipient_id, "typing_off")
+
+# ========== كشف الطلبات ==========
+def is_explicit_image_request(text):
+    text = text.lower()
+    keywords = ['صورة', 'صور', 'صوره', 'صورة كونان', 'اريد صورة', 'ابغي صورة', 'send image', 'picture', 'photo', 'صورة حلقة']
+    return any(k in text for k in keywords)
+
+def is_conan_related(text):
+    text = text.lower()
+    keywords = ['كونان', 'المحقق كونان', 'حلقة', 'جزء', 'رابط', 'شاهد', 'episode', 'conan']
+    return any(k in text for k in keywords)
+
+# ========== الذكاء الاصطناعي (Groq) ==========
+def get_ai_response(user_message, sender_id):
+    system_prompt = f"""أنت شخص حقيقي وإداري لصفحة المحقق كونان. تحدث بشكل عفوي وودي.
+🎯 قواعدك الصارمة:
+1- لا تذكر أبداً أنك بوت أو ذكاء اصطناعي.
+2- تحدث باللهجة الطبيعية المختصرة، واستخدم إيموجيز بشكل خفيف.
+3- لا ترسل روابط أو ملاحظات ما لم يطلبها المستخدم صراحةً.
+4- إذا سأل عن رابط للمشاهدة، أرسل: "{CONAN_LINK}" مع جملة قصيرة.
+5- إذا سأل عن سياسة النشر، وضّح بلطف: "{POLICY_NOTE}"
+6- شجّع على متابعة الصفحة "{PAGE_URL}" مرة واحدة فقط إذا كان الحديث طويلاً أو وداعاً.
+7- إذا خرج المستخدم عن الموضوع، أعد توجيهه بلطف لكونان دون أن يشعر.
+8- اجعل المحادثة مستمرة بطرح سؤال بسيط أو مشاركة رأي شخصي أحياناً.
+هدفك: محادثة إنسانية طبيعية 100%، كل مستخدم له حوار مستقل."""
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.85,
+            max_tokens=400
         )
-        return res.content if res.status_code == 200 else None
+        return completion.choices[0].message.content
     except Exception as e:
-        logger.error(f"❌ ElevenLabs TTS Error: {e}")
+        print(f"Groq Error: {e}")
         return None
 
-# ========== إرسال الرسائل (✅ access_token كـ Query Param) ==========
-def send_action(rid, act):
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-    data = {"recipient": {"id": rid}, "sender_action": act}
-    generic_session.post(FB_API_URL, params=params, json=data, timeout=10)
-
-def send_text_message(rid, text):
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-    data = {"recipient": {"id": rid}, "message": {"text": text}}
-    return generic_session.post(FB_API_URL, params=params, json=data, timeout=10).status_code == 200
-
-def send_image_attachment(rid, url):
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-    data = {"recipient": {"id": rid}, "message": {"attachment": {"type": "image", "payload": {"url": url, "is_reusable": True}}}}
-    return generic_session.post(FB_API_URL, params=params, json=data, timeout=10).status_code == 200
-
-def send_voice_attachment(rid, audio_bytes):
-    url = f"{FB_API_URL}?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {"recipient": json.dumps({"id": rid}), "message": json.dumps({"attachment": {"type": "audio", "payload": {"is_reusable": True}}})}
-    files = {"filedata": ("reply.mp3", io.BytesIO(audio_bytes), "audio/mpeg")}
-    return generic_session.post(url, data=payload, files=files, timeout=15).status_code == 200
-
-def send_text_chunks(rid, txt, delay=1.0, pchar=0.04):
-    send_action(rid, "typing_on")
-    time.sleep(min(len(txt) * pchar, 4))
-    parts = [p.strip() for p in txt.split('\n\n') if p.strip()] or [txt]
-    for i, p in enumerate(parts):
-        send_text_message(rid, p)
-        if i < len(parts) - 1: time.sleep(delay)
-    send_action(rid, "typing_off")
-
-# ========== معالجة المسارات ==========
-def generate_reply(text):
-    return get_openai_response(text)
-
-def handle_text(rid, txt):
-    if is_image_request(txt):
-        send_action(rid, "typing_on"); time.sleep(1.5)
-        send_image_attachment(rid, random.choice(CONAN_IMAGES))
-        send_action(rid, "typing_off")
-        return
-    reply = generate_reply(txt)
-    if reply:
-        send_text_chunks(rid, reply)
-    else:
-        fallback = "أهلاً! 😊 تفضل اسألني عن المحقق كونان، أنا مساعد صفحة Mounir هنا لمساعدتك!"
-        send_text_chunks(rid, fallback)
-
-def handle_voice(rid, aurl):
-    send_action(rid, "typing_on")
-    transcribed = transcribe_audio_whisper(aurl)
-    if not transcribed:
-        fallback_text = "عذراً، ما سمعت الكلام واضح، تقدر تعيده أو تكتبه؟ 🙏"
-        ab = generate_audio_elevenlabs(fallback_text)
-        if ab: send_voice_attachment(rid, ab)
-        else: send_text_chunks(rid, fallback_text)
-        send_action(rid, "typing_off")
-        return
-    logger.info(f"🎤 Transcribed: {transcribed[:50]}")
-    reply = generate_reply(transcribed) or "عذراً، ما قدرت أفهم السؤال 🙏"
-    ab = generate_audio_elevenlabs(reply)
-    time.sleep(1)
-    if ab: send_voice_attachment(rid, ab)
-    else: send_text_chunks(rid, reply)
-    send_action(rid, "typing_off")
-
-# ========== المعالج الخلفي ==========
-def process_message_background(sender_id, msg_data):
-    try:
-        if 'text' in msg_data:
-            handle_text(sender_id, msg_data['text'])
-        elif 'attachments' in msg_data:
-            for att in msg_data['attachments']:
-                if att.get('type') == 'audio':
-                    handle_voice(sender_id, att['payload']['url'])
-                    break
-    except Exception as e:
-        logger.error(f"❌ Background task failed for user {sender_id}: {e}")
-
-# ========== الويب هوك (✅ تحقق آمن ومُصحَّح) ==========
+# ========== الويب هوك ==========
 @app.route('/webhook', methods=['GET'])
-def verify():
-    if request.args.get('hub.mode') == 'subscribe' and request.args.get('hub.verify_token') == VERIFY_TOKEN:
-        return request.args.get('hub.challenge'), 200
+def verify_webhook():
+    mode = request.args.get('hub.mode')
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+    if mode == 'subscribe' and token == VERIFY_TOKEN:
+        return challenge, 200
     abort(403)
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
-    # 🔐 1. الحصول على التوقيع والسر
-    signature = request.headers.get('X-Hub-Signature-256', '')
-    
-    # 2. التحقق قبل قراءة JSON (قاعدة أمنية فيسبوك)
-    if APP_SECRET and signature:
-        try:
-            raw_body = request.get_data()  # بايتس خام غير مشفرة
-            expected = 'sha256=' + hmac.new(APP_SECRET.encode('utf-8'), raw_body, hashlib.sha256).hexdigest()
-            
-            if not hmac.compare_digest(signature, expected):
-                logger.warning(f"⚠️ Invalid webhook signature! Blocked.")
-                abort(403)
-            logger.info("✅ Webhook signature verified")
-        except Exception as e:
-            logger.error(f"❌ Signature verification error: {e}")
-            abort(403)
+def handle_webhook():
+    payload = request.get_json()
+    if payload.get('object') == 'page':
+        for entry in payload.get('entry', []):
+            for messaging_event in entry.get('messaging', []):
+                sender_id = messaging_event.get('sender', {}).get('id')
+                message = messaging_event.get('message', {})
+                
+                if message and 'text' in message:
+                    user_text = message['text']
 
-    # 📦 3. قراءة JSON بعد التأكد من الأمان
-    payload = request.get_json(silent=True)
-    if not payload or payload.get('object') != 'page':
-        return "OK", 200
+                    # 1️⃣ طلب صورة صريح -> إرسال صورة مباشرة
+                    if is_explicit_image_request(user_text):
+                        img_url = get_random_pexels_image()
+                        send_messenger_action(sender_id, "typing_on")
+                        time.sleep(1.5)
+                        send_image_attachment(sender_id, img_url)
+                        send_messenger_action(sender_id, "typing_off")
 
-    # ⚡ 4. إرسال المهام للمعالجة الخلفية فوراً
-    for entry in payload.get('entry', []):
-        for ev in entry.get('messaging', []):
-            sid = ev.get('sender', {}).get('id')
-            msg = ev.get('message', {})
-            if sid and msg:
-                executor.submit(process_message_background, sid, msg)
+                    # 2️⃣ مواضيع متعلقة بكونان -> Groq AI (متخصص)
+                    elif is_conan_related(user_text):
+                        ai_reply = get_ai_response(user_text, sender_id)
+                        if ai_reply:
+                            send_message_in_chunks(sender_id, ai_reply)
+                        else:
+                            # Fallback to Simsimi if Groq fails
+                            simsimi_reply = get_simsimi_response(user_text, sender_id)
+                            if simsimi_reply:
+                                send_message_in_chunks(sender_id, simsimi_reply)
 
-    return "EVENT_RECEIVED", 200
+                    # 3️⃣ محادثات عامة -> Simsimi (طبيعي وسريع)
+                    else:
+                        simsimi_reply = get_simsimi_response(user_text, sender_id)
+                        if simsimi_reply:
+                            send_message_in_chunks(sender_id, simsimi_reply)
+                        else:
+                            # Fallback to Groq if Simsimi fails
+                            ai_reply = get_ai_response(user_text, sender_id)
+                            if ai_reply:
+                                send_message_in_chunks(sender_id, ai_reply)
+
+        return "EVENT_RECEIVED", 200
+    return "OK", 200
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status":"running", "workers": executor._max_workers, "images": len(CONAN_IMAGES)}, 200
+    return {"status": "running", "apis": ["Simsimi", "Groq", "Pexels"]}, 200
 
-# إيقاف نظيف للمؤشرات عند إعادة تشغيل Railway
-atexit.register(executor.shutdown, wait=False)
+@app.route('/test-simsimi', methods=['GET'])
+def test_simsimi():
+    """اختبار Simsimi API"""
+    test_msg = "مرحبا"
+    reply = get_simsimi_response(test_msg, "test_user")
+    return {"status": "success", "test_message": test_msg, "reply": reply}, 200
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    logger.info(f"🚀 Starting secure async bot on port {port}")
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
