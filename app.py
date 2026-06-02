@@ -5,6 +5,7 @@ from urllib3.util.retry import Retry
 import requests
 from flask import Flask, request, abort
 from dotenv import load_dotenv
+from groq import Groq
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -15,21 +16,21 @@ app = Flask(__name__)
 VERIFY_TOKEN = os.getenv('FACEBOOK_VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
 APP_SECRET = os.getenv('FACEBOOK_APP_SECRET', '').strip()
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '').strip()
+GROQ_API_KEY = os.getenv('GROQ_API_KEY', '').strip()
 
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 FB_API_URL = "https://graph.facebook.com/v20.0/me/messages"
 executor = ThreadPoolExecutor(max_workers=15)
 
 # ========== Session مع Retry ذكي ==========
-def create_session():
+def create_fb_session():
     session = requests.Session()
     retry = Retry(total=3, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504), allowed_methods=["POST"])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
     return session
 
-fb_session = create_session()
-openai_session = create_session()
+fb_session = create_fb_session()
 
 # ========== Prompt النظام ==========
 SYSTEM_PROMPT = """أنت مساعد رسمي ودود لصفحة المحقق كونان التي يديرها Mounir.
@@ -40,27 +41,20 @@ SYSTEM_PROMPT = """أنت مساعد رسمي ودود لصفحة المحقق �
 شجّع على متابعة الصفحة https://www.facebook.com/mounirdjouid بشكل طبيعي غير مزعج.
 استخدم إيموجيز خفيفة 🎬🔍✨. هدفك: محادثة بشرية طبيعية 100%."""
 
-# ========== OpenAI API ==========
-def get_openai_response(text):
-    if not OPENAI_API_KEY: return None
+# ========== Groq API ==========
+def get_groq_response(text):
+    if not groq_client: return None
     try:
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ],
-            "temperature": 0.8,
-            "max_tokens": 512
-        }
-        res = openai_session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
-        if res.status_code == 200:
-            return res.json()['choices'][0]['message']['content']
-        logger.error(f"❌ OpenAI HTTP {res.status_code}: {res.text}")
-        return None
+        comp = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}],
+            temperature=0.8,
+            max_tokens=512,
+            timeout=20
+        )
+        return comp.choices[0].message.content
     except Exception as e:
-        logger.error(f"❌ OpenAI Error: {e}")
+        logger.error(f"❌ Groq Error: {e}")
         return None
 
 # ========== إرسال الرسائل ==========
@@ -78,7 +72,7 @@ def send_text_chunks(rid, txt, delay=1.0, pchar=0.04):
 
 # ========== معالجة الخلفية ==========
 def process_text(sender_id, text):
-    reply = get_openai_response(text) or "عذراً، حدث خطأ مؤقت. حاول مرة أخرى لاحقاً."
+    reply = get_groq_response(text) or "عذراً، حدث خطأ مؤقت. حاول مرة أخرى لاحقاً."
     send_text_chunks(sender_id, reply)
 
 # ========== الويب هوك ==========
@@ -112,10 +106,9 @@ def webhook():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "running", "openai_active": bool(OPENAI_API_KEY)}, 200
+    return {"status": "running", "groq_active": bool(groq_client)}, 200
 
 atexit.register(executor.shutdown, wait=False)
 
 if __name__ == '__main__':
-    # ✅ تم تغيير المنفذ إلى 8080
     app.run(host='0.0.0.0', port=8080)
