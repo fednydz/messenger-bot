@@ -1,4 +1,4 @@
-import os, time, random, logging, hmac, hashlib, atexit
+import os, time, random, logging, hmac, hashlib, atexit, threading
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -27,30 +27,22 @@ fb_session = requests.Session()
 retry_strategy = Retry(total=3, backoff_factor=1.0, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["POST"])
 fb_session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
 
-# ========== Prompt النظام - شخصية Mounir البشرية الطبيعية ==========
+# ========== Prompt النظام - شخصية Mounir البشرية ==========
 SYSTEM_PROMPT = """أنت Mounir، شخص حقيقي يدير صفحة "Mounir Djouida Mabrouk" على فيسبوك وينشر أجزاء حلقات المحقق كونان.
 
-🎯 طريقة كلامك (مهم جداً):
-• تحدث بالعامية العربية الطبيعية (الدارجة) كما يتحدث الشباب على السوشيال ميديا.
-• ردودك قصيرة جداً (جملة أو اثنتين كحد أقصى). البشر لا يكتبون فقرات طويلة في الشات.
-• لا تستخدم أبداً عبارات رسمية مثل: "كيف يمكنني مساعدتك"، "أهلاً وسهلاً بك"، "يسعدني خدمتك"، "تفضل بطرح سؤالك".
-• لا تقدم نفسك بشكل كامل في كل مرة. إذا سألوك "من أنت؟"، قل ببساطة: "أنا Mounير صاحب الصفحة" أو "أنا أدمن الصفحة" بدون تفاصيل زائدة.
-• كن عفويًا: استخدم كلمات مثل: "هلا"، "يا هلا"، "تمام"، "أهلاً"، "واش راك"، "شن عندك".
-• أحياناً ابدأ الرد بسؤال بسيط، وأحياناً ابدأ بالرد المباشر، وأحياناً استخدم إيموجي واحد فقط 😄🔍✨.
-• لا تكرر نفس أسلوب الرد. غيّر اللهجة والصياغة في كل رسالة.
+🎯 طريقة كلامك:
+• تحدث بالعامية العربية الطبيعية كما يتحدث الشباب على السوشيال ميديا.
+• ردودك قصيرة جداً (جملة أو اثنتين كحد أقصى).
+• لا تستخدم عبارات رسمية مثل: "كيف يمكنني مساعدتك"، "أهلاً وسهلاً بك".
+• إذا سألوك "من أنت؟"، قل ببساطة: "أنا Mounير صاحب الصفحة" بدون تفاصيل.
+• كن عفويًا: "هلا"، "يا هلا"، "تمام"، "أهلاً".
+• غيّر أسلوب الرد في كل رسالة.
 
-🔗 إذا طلب رابط: أرسل https://exe.io/vLPHW2I فقط مع جملة قصيرة مثل "تفضل الرابط" أو "ها هو".
-📺 إذا سأل عن حلقات كاملة: قل بلطف "بنشر أجزاء فقط مو حلقات كاملة" بدون اعتذار طويل.
-📢 لا تطلب المتابعة إلا نادراً جداً وبشكل طبيعي مثل "تابعنا عشان جديد كونان".
+🔗 إذا طلب رابط: https://exe.io/vLPHW2I
+📺 إذا سأل عن حلقات كاملة: "بنشر أجزاء فقط مو حلقات كاملة"
+📢 لا تطلب المتابعة إلا نادراً.
 
-💬 أمثلة على ردود بشرية طبيعية (استلهم منها ولا تنسخها حرفياً):
-- سؤال: "مرحبا كيف حالك؟" → رد: "هلا! تمام الحمد لله، تبي تشوف جديد كونان؟ 😄"
-- سؤال: "من أنت؟" → رد: "أنا Mounير، أدمن الصفحة" أو "أنا صاحب الصفحة، تبي شي؟ 😊"
-- سؤال: "أريد حلقة 5" → رد: "تفضل، الجزء المتاح من هنا: https://exe.io/vLPHW2I"
-- سؤال: "هل أنت بوت؟" → رد: "ههه لا يا غالي، أنا شخص حقيقي 😄"
-- سؤال: "مللت" → رد: "ههه خلنا نغير الجو بكونان، عندنا أجزاء جديدة 🔍"
-
-تذكر: أنت شخص حقيقي يتسلى في الشات، لست موظف دعم فني. اجعل المحادثة خفيفة وسريعة."""
+تذكر: أنت شخص حقيقي، لست موظف دعم فني."""
 
 # ========== الدوال ==========
 def get_groq_reply(text):
@@ -59,33 +51,56 @@ def get_groq_reply(text):
         res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}],
-            temperature=0.9,  # زيادة الإبداع والعفوية
-            max_tokens=300,   # ردود قصيرة جداً
+            temperature=0.9,
+            max_tokens=300,
             timeout=20
         )
         return res.choices[0].message.content
     except Exception as e:
         logger.error(f"Groq Error: {e}")
-        return "عذراً، عندي بطء شوي 🙏 حاول مرة ثانية"
+        return "عذراً، عندي بطء شوي  حاول مرة ثانية"
 
 def send_messenger_action(rid, action):
-    fb_session.post(FB_URL, params={"access_token": PAGE_TOKEN}, json={"recipient": {"id": rid}, "sender_action": action}, timeout=8)
+    """إجراء الكتابة/الإيقاف"""
+    try:
+        fb_session.post(FB_URL, params={"access_token": PAGE_TOKEN}, json={"recipient": {"id": rid}, "sender_action": action}, timeout=8)
+    except Exception as e:
+        logger.error(f"Action error: {e}")
+
+def keep_typing_indicator(rid, stop_event):
+    """تجديد مؤشر الكتابة كل 15 ثانية حتى يتم الإيقاف"""
+    while not stop_event.is_set():
+        send_messenger_action(rid, "typing_on")
+        stop_event.wait(15)  # انتظر 15 ثانية أو حتى يتم الإيقاف
 
 def send_text_with_typing(rid, text):
-    # ⏱️ تأخير بشري ~5 ثوانٍ مع تباين عشوائي
-    send_messenger_action(rid, "typing_on")
-    typing_duration = 4.5 + random.uniform(0, 1.0)  # بين 4.5 و 5.5 ثواني
-    time.sleep(typing_duration)
+    """إرسال النص مع مؤشر كتابة مستمر"""
+    stop_event = threading.Event()
     
-    # إرسال النص (عادة سيكون جملة واحدة قصيرة)
+    # بدء مؤشر الكتابة في خلفية منفصلة
+    typing_thread = threading.Thread(target=keep_typing_indicator, args=(rid, stop_event), daemon=True)
+    typing_thread.start()
+    
+    # محاكاة كتابة بشرية (5 ثوانٍ)
+    time.sleep(4.5 + random.uniform(0, 1.0))
+    
+    # إرسال الرسالة
     fb_session.post(FB_URL, params={"access_token": PAGE_TOKEN}, json={"recipient": {"id": rid}, "message": {"text": text}}, timeout=8)
-        
-    send_messenger_action(rid, "typing_off")
+    
+    # إيقاف مؤشر الكتابة
+    stop_event.set()
+    typing_thread.join(timeout=2)
 
 def process_message(sender_id, user_text):
     """معالجة الخلفية غير المتزامنة"""
     try:
+        # ✅ إرسال typing_on فوراً (يظهر النقاط الثلاث مباشرة)
+        send_messenger_action(sender_id, "typing_on")
+        
+        # معالجة Groq (قد تستغرق 2-5 ثوانٍ)
         reply = get_groq_reply(user_text)
+        
+        # إرسال الرد مع مؤشر كتابة مستمر
         send_text_with_typing(sender_id, reply)
     except Exception as e:
         logger.error(f"Processing failed for {sender_id}: {e}")
