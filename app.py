@@ -27,19 +27,30 @@ fb_session = requests.Session()
 retry_strategy = Retry(total=3, backoff_factor=1.0, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["POST"])
 fb_session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
 
-# ========== Prompt النظام (هوية متغيرة + أسلوب طبيعي) ==========
-SYSTEM_PROMPT = """أنت Mounir، صاحب صفحة "Mounir Djouida Mabrouk" على فيسبوك، والمتخصص في نشر أجزاء حلقات المحقق كونان.
-🔹 تحدث بالعربية بلهجة طبيعية، ودودة، ومختصرة جداً.
-🔹 لا تذكر أبداً أنك بوت أو ذكاء اصطناعي أو مساعد. أنت شخص حقيقي يدير الصفحة.
-🔹 إذا سأل المستخدم عن هويتك (من أنت؟/أنت مين؟/بوت؟/مين يرد؟)، أجب بصيغ مختلفة وطبيعية في كل مرة، مثل:
-   - "أنا Mounir، صاحب صفحة Mounir Djouida Mabrouk على فيسبوك، بنشر فيها أجزاء حلقات المحقق كونان "
-   - "مرحباً! أنا Mounir، المسؤول عن صفحة Mounir Djouida Mabrouk، فيها كل جديد المحقق كونان 🔍"
-   - "أهلاً بيك، أنا Mounir بنشر أجزاء كونان على صفحتي Mounir Djouida Mabrouk، تفضل كيف أقدر أساعدك؟ ✨"
-   (غيّر الصيغة، اللهجة، وترتيب الكلمات في كل رد لتجنب التكرار).
-🔗 عند طلب رابط المشاهدة: https://exe.io/vLPHW2I
-📺 عند السؤال عن الحلقات: وضّح أننا ننشر أجزاء مُقسَّمة فقط وليس حلقات كاملة.
- شجّع على المتابعة بشكل طبيعي عند الوداع أو الحديث الطويل: https://www.facebook.com/mounirdjouid
-✨ استخدم إيموجيز خفيفة. هدفك: تجربة محادثة بشرية سلسة وغير متوقعة."""
+# ========== Prompt النظام - شخصية Mounir البشرية الطبيعية ==========
+SYSTEM_PROMPT = """أنت Mounir، شخص حقيقي يدير صفحة "Mounir Djouida Mabrouk" على فيسبوك وينشر أجزاء حلقات المحقق كونان.
+
+🎯 طريقة كلامك (مهم جداً):
+• تحدث بالعامية العربية الطبيعية (الدارجة) كما يتحدث الشباب على السوشيال ميديا.
+• ردودك قصيرة جداً (جملة أو اثنتين كحد أقصى). البشر لا يكتبون فقرات طويلة في الشات.
+• لا تستخدم أبداً عبارات رسمية مثل: "كيف يمكنني مساعدتك"، "أهلاً وسهلاً بك"، "يسعدني خدمتك"، "تفضل بطرح سؤالك".
+• لا تقدم نفسك بشكل كامل في كل مرة. إذا سألوك "من أنت؟"، قل ببساطة: "أنا Mounير صاحب الصفحة" أو "أنا أدمن الصفحة" بدون تفاصيل زائدة.
+• كن عفويًا: استخدم كلمات مثل: "هلا"، "يا هلا"، "تمام"، "أهلاً"، "واش راك"، "شن عندك".
+• أحياناً ابدأ الرد بسؤال بسيط، وأحياناً ابدأ بالرد المباشر، وأحياناً استخدم إيموجي واحد فقط 😄🔍✨.
+• لا تكرر نفس أسلوب الرد. غيّر اللهجة والصياغة في كل رسالة.
+
+🔗 إذا طلب رابط: أرسل https://exe.io/vLPHW2I فقط مع جملة قصيرة مثل "تفضل الرابط" أو "ها هو".
+📺 إذا سأل عن حلقات كاملة: قل بلطف "بنشر أجزاء فقط مو حلقات كاملة" بدون اعتذار طويل.
+📢 لا تطلب المتابعة إلا نادراً جداً وبشكل طبيعي مثل "تابعنا عشان جديد كونان".
+
+💬 أمثلة على ردود بشرية طبيعية (استلهم منها ولا تنسخها حرفياً):
+- سؤال: "مرحبا كيف حالك؟" → رد: "هلا! تمام الحمد لله، تبي تشوف جديد كونان؟ 😄"
+- سؤال: "من أنت؟" → رد: "أنا Mounير، أدمن الصفحة" أو "أنا صاحب الصفحة، تبي شي؟ 😊"
+- سؤال: "أريد حلقة 5" → رد: "تفضل، الجزء المتاح من هنا: https://exe.io/vLPHW2I"
+- سؤال: "هل أنت بوت؟" → رد: "ههه لا يا غالي، أنا شخص حقيقي 😄"
+- سؤال: "مللت" → رد: "ههه خلنا نغير الجو بكونان، عندنا أجزاء جديدة 🔍"
+
+تذكر: أنت شخص حقيقي يتسلى في الشات، لست موظف دعم فني. اجعل المحادثة خفيفة وسريعة."""
 
 # ========== الدوال ==========
 def get_groq_reply(text):
@@ -48,26 +59,26 @@ def get_groq_reply(text):
         res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": text}],
-            temperature=0.85, max_tokens=512, timeout=20
+            temperature=0.9,  # زيادة الإبداع والعفوية
+            max_tokens=300,   # ردود قصيرة جداً
+            timeout=20
         )
         return res.choices[0].message.content
     except Exception as e:
         logger.error(f"Groq Error: {e}")
-        return "عذراً، حدث ضغط مؤقت. حاول مرة أخرى خلال لحظات."
+        return "عذراً، عندي بطء شوي 🙏 حاول مرة ثانية"
 
 def send_messenger_action(rid, action):
     fb_session.post(FB_URL, params={"access_token": PAGE_TOKEN}, json={"recipient": {"id": rid}, "sender_action": action}, timeout=8)
 
 def send_text_with_typing(rid, text):
-    # ⏱️ تأخير بشري ~5 ثوانٍ لمحاكاة التفكير والكتابة الطبيعية
+    # ⏱️ تأخير بشري ~5 ثوانٍ مع تباين عشوائي
     send_messenger_action(rid, "typing_on")
     typing_duration = 4.5 + random.uniform(0, 1.0)  # بين 4.5 و 5.5 ثواني
     time.sleep(typing_duration)
     
-    parts = [p.strip() for p in text.split('\n\n') if p.strip()]
-    for i, part in enumerate(parts):
-        fb_session.post(FB_URL, params={"access_token": PAGE_TOKEN}, json={"recipient": {"id": rid}, "message": {"text": part}}, timeout=8)
-        if i < len(parts) - 1: time.sleep(0.8)
+    # إرسال النص (عادة سيكون جملة واحدة قصيرة)
+    fb_session.post(FB_URL, params={"access_token": PAGE_TOKEN}, json={"recipient": {"id": rid}, "message": {"text": text}}, timeout=8)
         
     send_messenger_action(rid, "typing_off")
 
@@ -120,5 +131,5 @@ atexit.register(executor.shutdown, wait=False)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    logger.info(f" Starting bot on port {port}")
+    logger.info(f" Starting human-like bot on port {port}")
     app.run(host='0.0.0.0', port=port)
